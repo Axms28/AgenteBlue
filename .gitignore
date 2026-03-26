@@ -1,4 +1,7 @@
-agente/
+.env
+.env.*
 .env/
+agente/
 __pycache__/
+audio_sesion/
 *.pyc

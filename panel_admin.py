@@ -25,7 +25,7 @@ load_dotenv()
 # ─── Configuración de página ──────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="Admin — Agente JIM",
+    page_title="Admin — Agente Blue",
     page_icon="🤖",
     layout="wide",
 )
@@ -127,7 +127,7 @@ def toggle_empleado(emp_id: int, activo: bool):
 
 # ─── UI ──────────────────────────────────────────────────────────────────────
 
-st.title("🤖 Panel de administración — Agente JIM")
+st.title("🤖 Panel de administración — Agente Blue")
 st.caption("BlueBallon · Gestión de conocimiento y empleados")
 
 tab_conocimiento, tab_empleados = st.tabs(["📚 Base de conocimiento", "👥 Empleados"])
