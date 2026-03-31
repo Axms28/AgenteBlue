@@ -1,6 +1,6 @@
 """
 panel_admin.py
-Panel de administración del Agente JIM — BlueBallon
+Panel de administración del Agente Blue — BlueBallon
 Gestión de base de conocimiento y empleados sin tocar código.
 
 Uso local:
@@ -43,13 +43,16 @@ def obtener_clientes():
 
 cliente_openai, cliente_supabase = obtener_clientes()
 
-divisor = RecursiveCharacterTextSplitter(
-    chunk_size=300,
-    chunk_overlap=50,
-    separators=["\n\n", "\n", ". ", " "],
-)
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def obtener_divisor(chunk_size: int = 800, chunk_overlap: int = 100):
+    return RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", ". ", " "],
+    )
+
 
 def generar_embedding(texto: str) -> list[float]:
     respuesta = cliente_openai.embeddings.create(
@@ -59,8 +62,21 @@ def generar_embedding(texto: str) -> list[float]:
     return respuesta.data[0].embedding
 
 
-def ingestar_texto(contenido, categoria, nombre_area, nombre_puesto, prioridad) -> int:
-    chunks = divisor.split_text(contenido.strip())
+def ingestar_texto(
+    contenido:     str,
+    categoria:     str,
+    nombre_area:   str,
+    nombre_puesto: str,
+    prioridad:     str,
+    no_dividir:    bool = False,
+    chunk_size:    int  = 800,
+) -> int:
+    if no_dividir:
+        chunks = [contenido.strip()]
+    else:
+        divisor = obtener_divisor(chunk_size=chunk_size)
+        chunks  = divisor.split_text(contenido.strip())
+
     insertados = 0
     for chunk in chunks:
         if len(chunk.strip()) < 30:
@@ -77,6 +93,18 @@ def ingestar_texto(contenido, categoria, nombre_area, nombre_puesto, prioridad) 
         insertados += 1
         time.sleep(0.1)
     return insertados
+
+
+def extraer_texto_docx(archivo_bytes: bytes) -> str:
+    """Extrae texto limpio de un archivo .docx manteniendo la estructura."""
+    from docx import Document
+    doc = Document(io.BytesIO(archivo_bytes))
+    parrafos = []
+    for parrafo in doc.paragraphs:
+        texto = parrafo.text.strip()
+        if texto:
+            parrafos.append(texto)
+    return "\n\n".join(parrafos)
 
 
 def obtener_conocimiento() -> list[dict]:
@@ -117,6 +145,16 @@ def eliminar_chunk(chunk_id: int):
     cliente_supabase.table("conocimiento_jim").delete().eq("id", chunk_id).execute()
 
 
+def eliminar_por_filtro(categoria: str, nombre_area: str = "", nombre_puesto: str = ""):
+    """Elimina todos los chunks que coincidan con los filtros dados."""
+    query = cliente_supabase.table("conocimiento_jim").delete().eq("categoria", categoria)
+    if nombre_area.strip():
+        query = query.eq("nombre_area", nombre_area.strip())
+    if nombre_puesto.strip():
+        query = query.eq("nombre_puesto", nombre_puesto.strip())
+    query.execute()
+
+
 def eliminar_empleado(emp_id: int):
     cliente_supabase.table("empleados_jim").delete().eq("id", emp_id).execute()
 
@@ -128,7 +166,7 @@ def toggle_empleado(emp_id: int, activo: bool):
 # ─── UI ──────────────────────────────────────────────────────────────────────
 
 st.title("🤖 Panel de administración — Agente Blue")
-st.caption("BlueBallon · Gestión de conocimiento y empleados")
+st.caption("Grupo Blue Balloon · Gestión de conocimiento y empleados")
 
 tab_conocimiento, tab_empleados = st.tabs(["📚 Base de conocimiento", "👥 Empleados"])
 
@@ -143,43 +181,116 @@ with tab_conocimiento:
 
     modo_conocimiento = st.radio(
         "Modo de carga",
-        ["✍️  Manual (un documento)", "📊 Excel (carga masiva)"],
+        ["✍️  Manual (texto)", "📄 Documento Word (.docx)", "📊 Excel (carga masiva)"],
         horizontal=True,
     )
 
-    # ── Manual ──────────────────────────────────────────────────────────────
-    if modo_conocimiento == "✍️  Manual (un documento)":
+    # ── Manual ───────────────────────────────────────────────────────────────
+    if modo_conocimiento == "✍️  Manual (texto)":
 
         with st.form("form_conocimiento", clear_on_submit=True):
-            categoria = st.selectbox(
-                "Categoría *",
-                ["empresa", "area", "puesto", "politica"],
-                format_func=lambda x: {
-                    "empresa":  "🏢 Empresa — misión, visión, valores",
-                    "area":     "🗂  Área / Departamento",
-                    "puesto":   "👤 Puesto / Rol",
-                    "politica": "📋 Política / Reglamento",
-                }[x],
-            )
-            nombre_area   = st.text_input("Nombre del área", placeholder="JimTech, RRHH, Ventas...")
-            nombre_puesto = st.text_input("Nombre del puesto", placeholder="Desarrollador, Analista... (solo si es puesto)")
-            prioridad     = st.select_slider("Prioridad RAG", options=["baja", "media", "alta"], value="alta")
-            contenido     = st.text_area(
-                "Contenido *", height=220,
-                placeholder="Escribe aquí la información que JIM debe conocer...",
-            )
+            col_a, col_b = st.columns(2)
+            with col_a:
+                categoria = st.selectbox(
+                    "Categoría *",
+                    ["empresa", "area", "puesto", "politica"],
+                    format_func=lambda x: {
+                        "empresa":  "🏢 Empresa — misión, visión, valores",
+                        "area":     "🗂  Área / Departamento",
+                        "puesto":   "👤 Puesto / Rol",
+                        "politica": "📋 Política / Reglamento",
+                    }[x],
+                )
+                nombre_area   = st.text_input("Nombre del área", placeholder="JimTech, RRHH, Ventas...")
+                nombre_puesto = st.text_input("Nombre del puesto", placeholder="Director General, Desarrollador...")
+            with col_b:
+                prioridad  = st.select_slider("Prioridad RAG", options=["baja", "media", "alta"], value="alta")
+                chunk_size = st.select_slider(
+                    "Tamaño de fragmento",
+                    options=[300, 500, 800, 1200, 2000],
+                    value=800,
+                    help="Documentos largos → 800-1200. Textos cortos → 300-500.",
+                )
+                no_dividir = st.checkbox("No dividir (documento corto, menos de 400 palabras)")
+
+            contenido = st.text_area("Contenido *", height=260,
+                placeholder="Pega aquí la información que Blue debe conocer...")
             enviado = st.form_submit_button("⬆️  Subir a la base de conocimiento", use_container_width=True, type="primary")
 
         if enviado:
             if not contenido.strip():
                 st.error("El contenido no puede estar vacío.")
             else:
-                with st.spinner("Procesando chunks y generando embeddings..."):
-                    n = ingestar_texto(contenido, categoria, nombre_area, nombre_puesto, prioridad)
+                with st.spinner("Procesando y generando embeddings..."):
+                    n = ingestar_texto(contenido, categoria, nombre_area, nombre_puesto, prioridad, no_dividir, chunk_size)
                 st.success(f"✅ {n} fragmento(s) subidos correctamente.")
                 st.rerun()
 
-    # ── Excel masivo ─────────────────────────────────────────────────────────
+    # ── Word (.docx) ──────────────────────────────────────────────────────────
+    elif modo_conocimiento == "📄 Documento Word (.docx)":
+
+        st.info(
+            "Sube directamente el archivo Word — Blue extrae el texto automáticamente.  \n"
+            "Ideal para: perfiles de puesto, reglamentos, manuales, descripciones de área.",
+            icon="📄",
+        )
+
+        col_meta, col_cfg = st.columns(2)
+        with col_meta:
+            cat_docx = st.selectbox(
+                "Categoría *",
+                ["empresa", "area", "puesto", "politica"],
+                format_func=lambda x: {
+                    "empresa":  "🏢 Empresa",
+                    "area":     "🗂  Área",
+                    "puesto":   "👤 Puesto",
+                    "politica": "📋 Política",
+                }[x],
+                key="cat_docx",
+            )
+            area_docx   = st.text_input("Nombre del área", placeholder="RRHH, JimTech...", key="area_docx")
+            puesto_docx = st.text_input("Nombre del puesto", placeholder="Director General, Analista...", key="puesto_docx")
+            prio_docx   = st.select_slider("Prioridad", options=["baja", "media", "alta"], value="alta", key="prio_docx")
+
+        with col_cfg:
+            chunk_docx = st.select_slider(
+                "Tamaño de fragmento",
+                options=[300, 500, 800, 1200, 2000],
+                value=1200,
+                help="Para perfiles de puesto y manuales se recomienda 1200.",
+                key="chunk_docx",
+            )
+            no_div_docx = st.checkbox(
+                "No dividir (subir como un solo bloque)",
+                value=False,
+                key="nodiv_docx",
+            )
+
+        archivo_docx = st.file_uploader("Sube tu archivo Word (.docx)", type=["docx"])
+
+        if archivo_docx:
+            try:
+                texto_extraido = extraer_texto_docx(archivo_docx.read())
+                palabras       = len(texto_extraido.split())
+
+                st.success(f"✅ Documento leído: {palabras} palabras extraídas")
+
+                with st.expander("👁 Vista previa del texto extraído"):
+                    st.text(texto_extraido[:2000] + ("..." if len(texto_extraido) > 2000 else ""))
+
+                if st.button("⬆️  Ingestar documento en la base de conocimiento", type="primary", use_container_width=True):
+                    with st.spinner("Procesando chunks y generando embeddings..."):
+                        n = ingestar_texto(
+                            texto_extraido, cat_docx, area_docx, puesto_docx,
+                            prio_docx, no_div_docx, chunk_docx,
+                        )
+                    st.success(f"✅ {n} fragmento(s) subidos desde el documento Word.")
+                    st.rerun()
+
+            except Exception as e:
+                st.error(f"Error leyendo el archivo: {e}")
+
+    # ── Excel masivo ──────────────────────────────────────────────────────────
     else:
         st.info(
             "El Excel debe tener estas columnas:  \n"
@@ -201,7 +312,7 @@ with tab_conocimiento:
         st.download_button(
             "⬇️  Descargar plantilla Excel",
             data=buf.getvalue(),
-            file_name="plantilla_conocimiento_jim.xlsx",
+            file_name="plantilla_conocimiento_blue.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -238,13 +349,29 @@ with tab_conocimiento:
     if not datos:
         st.info("La base de conocimiento está vacía.")
     else:
-        cats   = sorted(set(d["categoria"] for d in datos))
-        filtro = st.multiselect("Filtrar por categoría", cats, default=cats)
+        col_filtro, col_borrar = st.columns([3, 2])
+
+        with col_filtro:
+            cats   = sorted(set(d["categoria"] for d in datos))
+            filtro = st.multiselect("Filtrar por categoría", cats, default=cats)
+
+        with col_borrar:
+            st.write("")
+            with st.expander("🗑 Borrado masivo"):
+                st.caption("Elimina todos los fragmentos que coincidan con los filtros.")
+                cat_borrar    = st.selectbox("Categoría", cats, key="cat_borrar")
+                area_borrar   = st.text_input("Área (dejar vacío = todas)", key="area_borrar")
+                puesto_borrar = st.text_input("Puesto (dejar vacío = todos)", key="puesto_borrar")
+                if st.button("🗑 Eliminar fragmentos", type="secondary"):
+                    eliminar_por_filtro(cat_borrar, area_borrar, puesto_borrar)
+                    st.success("✅ Fragmentos eliminados.")
+                    st.rerun()
+
         datos_f = [d for d in datos if d["categoria"] in filtro]
         st.caption(f"{len(datos_f)} fragmento(s)")
 
         for chunk in datos_f:
-            etiqueta = chunk.get("nombre_area") or chunk.get("nombre_puesto") or chunk["categoria"]
+            etiqueta = chunk.get("nombre_puesto") or chunk.get("nombre_area") or chunk["categoria"]
             col_txt, col_btn = st.columns([6, 1])
             with col_txt:
                 with st.expander(f"[{chunk['categoria'].upper()}] {etiqueta} — ID {chunk['id']}"):
@@ -272,7 +399,7 @@ with tab_empleados:
         key="modo_emp",
     )
 
-    # ── Manual ──────────────────────────────────────────────────────────────
+    # ── Manual ───────────────────────────────────────────────────────────────
     if modo_empleados == "✍️  Manual (uno por uno)":
 
         with st.form("form_empleado", clear_on_submit=True):
@@ -300,7 +427,7 @@ with tab_empleados:
                 st.success(f"✅ {nombre} {apellido} registrado correctamente.")
                 st.rerun()
 
-    # ── Excel masivo ─────────────────────────────────────────────────────────
+    # ── Excel masivo ──────────────────────────────────────────────────────────
     else:
         st.info(
             "El Excel debe tener estas columnas:  \n"
@@ -322,7 +449,7 @@ with tab_empleados:
         st.download_button(
             "⬇️  Descargar plantilla Excel",
             data=buf_emp.getvalue(),
-            file_name="plantilla_empleados_jim.xlsx",
+            file_name="plantilla_empleados_blue.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
