@@ -237,14 +237,39 @@ def actualizar_chunk(chunk_id, cambios):
 def obtener_empleados():
     return cliente_supabase.table("empleados_jim").select("*").order("creado_en", desc=True).execute().data or []
 
-def registrar_empleado(nombre, apellido, subsidiaria, area, puesto, email, fecha_ingreso):
-    sub_guardar = "" if subsidiaria == "Grupo Blue Balloon (general)" else subsidiaria
-    cliente_supabase.table("empleados_jim").insert({
+def _fmt_hora(v):
+    if v is None or str(v).strip() == "":
+        return ""
+    try:
+        return v.strftime("%H:%M:%S")
+    except Exception:
+        return str(v)
+
+def _hora(h, m):
+    # Evita depender de versiones de Streamlit (time_input defaults)
+    import datetime as _dt
+    return _dt.time(hour=h, minute=m)
+
+def registrar_empleado(nombre, apellido, subsidiaria, area, puesto, email, fecha_ingreso, modo_laboral, hora_inicio, hora_fin):
+    sub_guardar = "" if subsidiaria == "Grupo BlueBalloon (general)" else subsidiaria
+    payload = {
         "nombre": nombre.strip(), "apellido": apellido.strip(),
         "subsidiaria": sub_guardar,
         "area": area.strip(), "puesto": puesto.strip(),
         "email": email.strip(), "fecha_ingreso": str(fecha_ingreso), "activo": True,
-    }).execute()
+        "modo_laboral": str(modo_laboral).strip(),
+        "hora_inicio": _fmt_hora(hora_inicio),
+        "hora_fin": _fmt_hora(hora_fin),
+    }
+    try:
+        cliente_supabase.table("empleados_jim").insert(payload).execute()
+    except Exception as e:
+        st.error(
+            "❌ No pude guardar el empleado con los campos nuevos. "
+            "Asegúrate de crear estas columnas en Supabase (tabla `empleados_jim`): "
+            "`modo_laboral` (text), `hora_inicio` (text/time), `hora_fin` (text/time)."
+        )
+        raise e
 
 def eliminar_empleado(emp_id):
     cliente_supabase.table("empleados_jim").delete().eq("id", emp_id).execute()
@@ -255,7 +280,8 @@ def toggle_empleado(emp_id, activo):
 def actualizar_empleado(emp_id, cambios):
     """
     cambios: dict con cualquiera de:
-      nombre, apellido, subsidiaria, area, puesto, email, fecha_ingreso, activo
+      nombre, apellido, subsidiaria, area, puesto, email, fecha_ingreso, activo,
+      modo_laboral, hora_inicio, hora_fin
     """
     if not cambios:
         return
@@ -277,7 +303,20 @@ def actualizar_empleado(emp_id, cambios):
     for k in ("nombre", "apellido", "area", "puesto", "email"):
         if k in payload and payload[k] is not None:
             payload[k] = str(payload[k]).strip()
-    cliente_supabase.table("empleados_jim").update(payload).eq("id", emp_id).execute()
+    if "modo_laboral" in payload and payload["modo_laboral"] is not None:
+        payload["modo_laboral"] = str(payload["modo_laboral"]).strip()
+    if "hora_inicio" in payload:
+        payload["hora_inicio"] = _fmt_hora(payload.get("hora_inicio"))
+    if "hora_fin" in payload:
+        payload["hora_fin"] = _fmt_hora(payload.get("hora_fin"))
+    try:
+        cliente_supabase.table("empleados_jim").update(payload).eq("id", emp_id).execute()
+    except Exception as e:
+        st.error(
+            "❌ No pude actualizar el empleado con los campos nuevos. "
+            "Verifica que existan en Supabase: `modo_laboral`, `hora_inicio`, `hora_fin`."
+        )
+        raise e
 
 # ─── Helpers videos ───────────────────────────────────────────────────────────
 
@@ -321,7 +360,7 @@ with st.expander("ℹ️ ¿Qué es este panel y cómo funciona?", expanded=False
 
     **Estructura del Grupo:**
     Grupo BlueBalloon es la empresa holding. Debajo están las empresas hermanas: JimTech, GreenBalloon, etc.
-    Cada empresa tiene sus propias áreas y puestos. Blue sabe distinguir entre ellas.
+    Cada empresa tiene sus propias áreas y puestos. Ali sabe distinguir entre ellas.
 
     **¿Qué debes hacer aquí?**
     1. 📚 **Base de conocimiento** → Sube documentos indicando a qué empresa pertenecen.
@@ -342,7 +381,7 @@ with tab_conocimiento:
 
     st.info(
         "**¿Qué es la base de conocimiento?**  \n"
-        "Es la memoria de Blue. Todo lo que subas aquí es lo que Blue le dirá a los empleados.  \n"
+        "Es la memoria de Ali. Todo lo que subas aquí es lo que Ali le dirá a los empleados.  \n"
         "Puedes subir información del Grupo en general, o específica de JimTech, Green Balloon, etc.",
         icon="🧠",
     )
@@ -359,7 +398,7 @@ with tab_conocimiento:
         return st.selectbox(
             "¿A qué empresa pertenece este contenido? *",
             SUBSIDIARIAS,
-            help="Grupo Blue Balloon (general) = aplica a todas las empresas. JimTech, Green Balloon = solo para esa empresa.",
+            help="Grupo BlueBalloon (general) = aplica a todas las empresas. JimTech, GreenBalloon = solo para esa empresa.",
             key=f"sub_{key_prefix}",
         )
 
@@ -369,7 +408,7 @@ with tab_conocimiento:
             subsidiaria = st.selectbox(
                 "¿A qué empresa pertenece este contenido? *",
                 SUBSIDIARIAS,
-                help="Selecciona la empresa. Si es información del grupo en general (misión, visión), elige 'Grupo Blue Balloon (general)'.",
+                help="Selecciona la empresa. Si es información del grupo en general (misión, visión), elige 'Grupo BlueBalloon (general)'.",
             )
             categoria = st.selectbox("Categoría *", ["empresa", "area", "puesto", "politica"],
                 format_func=lambda x: {
@@ -393,8 +432,8 @@ with tab_conocimiento:
                 chunk_size = st.select_slider("Tamaño de fragmento", options=[300, 500, 800, 1200, 2000], value=800)
             no_dividir = st.checkbox("No dividir (documento corto, menos de 300 palabras)")
             contenido = st.text_area("Contenido *", height=240,
-                placeholder="Pega aquí el texto que Blue debe aprender...")
-            enviado = st.form_submit_button("⬆️  Guardar en la memoria de Blue", use_container_width=True, type="primary")
+                placeholder="Pega aquí el texto que Ali debe aprender...")
+            enviado = st.form_submit_button("⬆️  Guardar en la memoria de Ali", use_container_width=True, type="primary")
 
         if enviado:
             if not contenido.strip():
@@ -402,12 +441,12 @@ with tab_conocimiento:
             else:
                 with st.spinner("Procesando y guardando..."):
                     n = ingestar_texto(contenido, categoria, subsidiaria, nombre_area, nombre_puesto, prioridad, no_dividir, chunk_size)
-                st.success(f"✅ {n} fragmento(s) guardados en la memoria de Blue.")
+                st.success(f"✅ {n} fragmento(s) guardados en la memoria de Ali.")
                 st.rerun()
 
     # ── Word ─────────────────────────────────────────────────────────────────
     elif modo == "📄 Documento Word (.docx)":
-        st.success("Sube el archivo Word y Blue extrae el texto automáticamente.", icon="📄")
+        st.success("Sube el archivo Word y Ali extrae el texto automáticamente.", icon="📄")
         col_meta, col_cfg = st.columns(2)
         with col_meta:
             sub_docx = st.selectbox("¿A qué empresa pertenece?", SUBSIDIARIAS, key="sub_docx")
@@ -433,7 +472,7 @@ with tab_conocimiento:
                 st.success(f"✅ '{archivo_docx.name}' leído: {palabras} palabras")
                 with st.expander("👁 Vista previa"):
                     st.text(texto_extraido[:2000] + ("..." if len(texto_extraido) > 2000 else ""))
-                if st.button("⬆️  Guardar en la memoria de Blue", type="primary", use_container_width=True):
+                if st.button("⬆️  Guardar en la memoria de Ali", type="primary", use_container_width=True):
                     with st.spinner("Procesando..."):
                         n = ingestar_texto(texto_extraido, cat_docx, sub_docx, area_docx, puesto_docx, prio_docx, no_div_docx, chunk_docx)
                     st.success(f"✅ {n} fragmento(s) guardados.")
@@ -460,12 +499,12 @@ with tab_conocimiento:
             "nombre_puesto": "", "prioridad": "alta", "contenido": "El área de Desarrollo de JimTech...",
         }, {
             "subsidiaria": "", "categoria": "empresa", "nombre_area": "",
-            "nombre_puesto": "", "prioridad": "alta", "contenido": "Grupo Blue Balloon es una empresa...",
+            "nombre_puesto": "", "prioridad": "alta", "contenido": "Grupo BlueBalloon es una empresa...",
         }])
         buf = io.BytesIO()
         plantilla.to_excel(buf, index=False)
         st.download_button("⬇️  Descargar plantilla", data=buf.getvalue(),
-            file_name="plantilla_conocimiento_blue.xlsx",
+            file_name="plantilla_conocimiento_Ali.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         archivo = st.file_uploader("Sube tu Excel", type=["xlsx"])
         if archivo:
@@ -493,11 +532,11 @@ with tab_conocimiento:
                     st.rerun()
 
     st.divider()
-    st.subheader("🗂 Contenido guardado en la memoria de Blue")
+    st.subheader("🗂 Contenido guardado en la memoria de Ali")
     datos = obtener_conocimiento()
 
     if not datos:
-        st.warning("⚠️ La memoria de Blue está vacía.")
+        st.warning("⚠️ La memoria de Ali está vacía.")
     else:
         col_f1, col_f2, col_borrar = st.columns([2, 2, 2])
         with col_f1:
@@ -611,7 +650,7 @@ with tab_videos:
 
     st.info(
         "**¿Cómo funcionan los videos?**  \n"
-        "Blue los enviará automáticamente por WhatsApp cuando el tema sea relevante.  \n"
+        "Ali los enviará automáticamente por WhatsApp cuando el tema sea relevante.  \n"
         "Puedes subir videos generales del grupo o específicos de cada empresa.",
         icon="🎥",
     )
@@ -621,7 +660,7 @@ with tab_videos:
     col_info_vid, col_archivo_vid = st.columns([1, 1])
     with col_info_vid:
         titulo_vid      = st.text_input("Título del video *", placeholder="Bienvenida a JimTech...")
-        descripcion_vid = st.text_area("¿Cuándo debe enviarlo Blue?", height=80,
+        descripcion_vid = st.text_area("¿Cuándo debe enviarlo Ali?", height=80,
             placeholder="Enviar cuando el empleado pregunte sobre JimTech o al inicio del onboarding...")
         sub_vid = st.selectbox("¿A qué empresa pertenece?", SUBSIDIARIAS, key="sub_vid")
         cat_vid = st.selectbox("Categoría", ["empresa", "area", "puesto", "politica"],
@@ -646,13 +685,13 @@ with tab_videos:
 
     st.markdown("---")
     if archivo_vid and titulo_vid:
-        if st.button("⬆️  Subir video y activar en Blue", type="primary", use_container_width=True):
+        if st.button("⬆️  Subir video y activar en Ali", type="primary", use_container_width=True):
             with st.spinner("Subiendo video..."):
                 try:
                     ext = archivo_vid.name.split(".")[-1].lower()
                     url = subir_video_supabase(archivo_vid.getvalue(), ext)
                     registrar_video(titulo_vid, descripcion_vid, cat_vid, sub_vid, area_vid, puesto_vid, url)
-                    st.success(f"✅ '{titulo_vid}' disponible para Blue.")
+                    st.success(f"✅ '{titulo_vid}' disponible para Ali.")
                     st.balloons()
                     st.rerun()
                 except Exception as e:
@@ -701,7 +740,7 @@ with tab_empleados:
 
     st.info(
         "**¿Por qué registrar empleados?**  \n"
-        "Cuando el empleado le escriba a Blue y diga su nombre, Blue lo buscará aquí "
+        "Cuando el empleado le escriba a Ali y diga su nombre, Ali lo buscará aquí "
         "para saber a qué empresa, área y puesto pertenece y personalizar el onboarding.  \n\n"
         "**Importante:** Registra al empleado ANTES de que inicie su onboarding.",
         icon="👥",
@@ -716,20 +755,34 @@ with tab_empleados:
             subsidiaria_emp = st.selectbox(
                 "Empresa donde trabaja *",
                 SUBSIDIARIAS,
-                help="Blue usará esto para mostrar información específica de esa empresa.",
+                help="Ali usará esto para mostrar información específica de esa empresa.",
             )
             col1, col2 = st.columns(2)
             with col1:
                 nombre    = st.text_input("Nombre *", placeholder="Axel",
-                    help="El nombre que usará al presentarse con Blue.")
+                    help="El nombre que usará al presentarse con Ali.")
                 area_emp  = st.text_input("Área *", placeholder="Desarrollo, RRHH, Ventas...",
-                    help="Blue mostrará información específica de esta área.")
+                    help="Ali mostrará información específica de esta área.")
                 email_emp = st.text_input("Email", placeholder="axel@jimtech.mx")
             with col2:
                 apellido   = st.text_input("Apellido", placeholder="García")
                 puesto_emp = st.text_input("Puesto *", placeholder="Desarrollador, Analista...",
-                    help="Blue explicará las responsabilidades de este puesto.")
+                    help="Ali explicará las responsabilidades de este puesto.")
                 fecha_ing  = st.date_input("Fecha de ingreso")
+
+            st.markdown("#### 🕒 Modo laboral y horario")
+            col3, col4, col5 = st.columns([2, 1, 1])
+            with col3:
+                modo_laboral = st.selectbox(
+                    "Modo laboral *",
+                    ["Tiempo completo", "Medio tiempo"],
+                    help="Esto se usará para personalizar horarios y expectativas.",
+                )
+            with col4:
+                hora_inicio = st.time_input("Hora inicio *", value=_hora(9, 0))
+            with col5:
+                hora_fin = st.time_input("Hora fin *", value=_hora(18, 0))
+
             enviado_emp = st.form_submit_button("➕  Registrar empleado", use_container_width=True, type="primary")
 
         if enviado_emp:
@@ -740,7 +793,10 @@ with tab_empleados:
             elif not puesto_emp.strip():
                 st.error("⚠️ El puesto es obligatorio.")
             else:
-                registrar_empleado(nombre, apellido, subsidiaria_emp, area_emp, puesto_emp, email_emp, fecha_ing)
+                registrar_empleado(
+                    nombre, apellido, subsidiaria_emp, area_emp, puesto_emp, email_emp, fecha_ing,
+                    modo_laboral, hora_inicio, hora_fin,
+                )
                 st.success(f"✅ {nombre} {apellido} registrado en {subsidiaria_emp}. Ya puede iniciar su onboarding.")
                 st.rerun()
 
@@ -754,22 +810,27 @@ with tab_empleados:
         | `subsidiaria` | Empresa del grupo | `JimTech`, `Green Balloon` |
         | `area` | Área | `Desarrollo` |
         | `puesto` | Cargo | `Desarrollador` |
+        | `modo_laboral` | Modo laboral | `Tiempo completo` / `Medio tiempo` |
+        | `hora_inicio` | Hora inicio | `09:00` |
+        | `hora_fin` | Hora fin | `18:00` |
         | `email` | Correo | `axel@jimtech.mx` |
         | `fecha_ingreso` | Fecha inicio | `2026-03-31` |
         """)
         plantilla_emp = pd.DataFrame([{
             "nombre": "Axel", "apellido": "García", "subsidiaria": "JimTech",
             "area": "Desarrollo", "puesto": "Desarrollador",
+            "modo_laboral": "Tiempo completo", "hora_inicio": "09:00", "hora_fin": "18:00",
             "email": "axel@jimtech.mx", "fecha_ingreso": "2026-03-31",
         }, {
             "nombre": "Ana", "apellido": "López", "subsidiaria": "Green Balloon",
             "area": "RRHH", "puesto": "Analista RRHH",
+            "modo_laboral": "Medio tiempo", "hora_inicio": "09:00", "hora_fin": "14:00",
             "email": "ana@greenballoon.mx", "fecha_ingreso": "2026-03-31",
         }])
         buf_emp = io.BytesIO()
         plantilla_emp.to_excel(buf_emp, index=False)
         st.download_button("⬇️  Descargar plantilla", data=buf_emp.getvalue(),
-            file_name="plantilla_empleados_blue.xlsx",
+            file_name="plantilla_empleados_Ali.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         archivo_emp = st.file_uploader("Sube tu Excel", type=["xlsx"], key="xlsx_emp")
         if archivo_emp:
@@ -785,6 +846,9 @@ with tab_empleados:
                             str(fila.get("subsidiaria", "")), str(fila.get("area", "")),
                             str(fila.get("puesto", "")), str(fila.get("email", "")),
                             str(fila.get("fecha_ingreso", "")),
+                            str(fila.get("modo_laboral", "Tiempo completo")),
+                            str(fila.get("hora_inicio", "09:00")),
+                            str(fila.get("hora_fin", "18:00")),
                         )
                     st.success(f"✅ {len(df_emp)} empleado(s) registrados.")
                     st.balloons()
@@ -807,10 +871,17 @@ with tab_empleados:
                 # Normalizar fecha a algo editable
                 if "fecha_ingreso" in df_emp_edit.columns:
                     df_emp_edit["fecha_ingreso"] = df_emp_edit["fecha_ingreso"].fillna("")
+                if "modo_laboral" in df_emp_edit.columns:
+                    df_emp_edit["modo_laboral"] = df_emp_edit["modo_laboral"].fillna("Tiempo completo")
+                if "hora_inicio" in df_emp_edit.columns:
+                    df_emp_edit["hora_inicio"] = df_emp_edit["hora_inicio"].fillna("09:00")
+                if "hora_fin" in df_emp_edit.columns:
+                    df_emp_edit["hora_fin"] = df_emp_edit["hora_fin"].fillna("18:00")
 
                 # Orden de columnas
                 cols = [
                     "id", "nombre", "apellido", "subsidiaria", "area", "puesto",
+                    "modo_laboral", "hora_inicio", "hora_fin",
                     "email", "fecha_ingreso", "activo", "creado_en",
                 ]
                 df_emp_edit = df_emp_edit[[c for c in cols if c in df_emp_edit.columns]]
@@ -827,8 +898,14 @@ with tab_empleados:
                             options=SUBSIDIARIAS,
                             required=True,
                         ),
+                        "modo_laboral": st.column_config.SelectboxColumn(
+                            "Modo laboral",
+                            options=["Tiempo completo", "Medio tiempo"],
+                        ),
                         "activo": st.column_config.CheckboxColumn("Activo"),
                         "fecha_ingreso": st.column_config.TextColumn("Fecha ingreso (YYYY-MM-DD)"),
+                        "hora_inicio": st.column_config.TextColumn("Hora inicio (HH:MM)"),
+                        "hora_fin": st.column_config.TextColumn("Hora fin (HH:MM)"),
                     },
                 )
 
@@ -841,7 +918,7 @@ with tab_empleados:
                             antes = orig.loc[emp_id]
                             despues = new.loc[emp_id]
                             cambios = {}
-                            for campo in ["nombre", "apellido", "subsidiaria", "area", "puesto", "email", "fecha_ingreso", "activo"]:
+                            for campo in ["nombre", "apellido", "subsidiaria", "area", "puesto", "modo_laboral", "hora_inicio", "hora_fin", "email", "fecha_ingreso", "activo"]:
                                 if campo not in new.columns:
                                     continue
                                 a = "" if pd.isna(antes.get(campo)) else str(antes.get(campo))
@@ -873,7 +950,7 @@ with tab_empleados:
             with col_tog:
                 nuevo = st.toggle("Activo", value=emp["activo"],
                     key=f"tog_{emp['id']}", label_visibility="collapsed",
-                    help="Inactivo = Blue no reconocerá a este empleado.")
+                    help="Inactivo = Ali no reconocerá a este empleado.")
                 if nuevo != emp["activo"]:
                     toggle_empleado(emp["id"], nuevo)
                     st.rerun()
