@@ -16,7 +16,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 load_dotenv()
 
-st.set_page_config(page_title="Admin — Agente Blue", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Admin — Agente Ali", page_icon="🤖", layout="wide")
 
 @st.cache_resource
 def obtener_clientes():
@@ -30,9 +30,9 @@ cliente_openai, cliente_supabase = obtener_clientes()
 # ─── Subsidiarias disponibles ─────────────────────────────────────────────────
 # Agrega aquí las empresas del grupo — aparecerán en todos los formularios
 SUBSIDIARIAS = [
-    "Grupo Blue Balloon (general)",
+    "Grupo BlueBalloon (general)",
     "JimTech",
-    "Green Balloon",
+    "GreenBalloon",
 ]
 
 # ─── Helpers conocimiento ─────────────────────────────────────────────────────
@@ -51,7 +51,7 @@ def generar_embedding(texto):
 
 def ingestar_texto(contenido, categoria, subsidiaria, nombre_area, nombre_puesto, prioridad, no_dividir=False, chunk_size=800):
     # Si es info general del grupo, subsidiaria queda vacía para que el RAG la incluya siempre
-    sub_guardar = "" if subsidiaria == "Grupo Blue Balloon (general)" else subsidiaria
+    sub_guardar = "" if subsidiaria == "Grupo BlueBalloon (general)" else subsidiaria
     chunks = [contenido.strip()] if no_dividir else obtener_divisor(chunk_size).split_text(contenido.strip())
     insertados = 0
     for chunk in chunks:
@@ -99,7 +99,7 @@ def obtener_empleados():
     return cliente_supabase.table("empleados_jim").select("*").order("creado_en", desc=True).execute().data or []
 
 def registrar_empleado(nombre, apellido, subsidiaria, area, puesto, email, fecha_ingreso):
-    sub_guardar = "" if subsidiaria == "Grupo Blue Balloon (general)" else subsidiaria
+    sub_guardar = "" if subsidiaria == "Grupo BlueBalloon (general)" else subsidiaria
     cliente_supabase.table("empleados_jim").insert({
         "nombre": nombre.strip(), "apellido": apellido.strip(),
         "subsidiaria": sub_guardar,
@@ -146,16 +146,16 @@ def toggle_video(video_id, activo):
 
 # ─── UI ──────────────────────────────────────────────────────────────────────
 
-st.title("🤖 Panel de administración — Agente Blue")
-st.caption("Grupo Blue Balloon · JimTech · Green Balloon · Gestión de conocimiento, videos y empleados")
+st.title("🤖 Panel de administración — Agente Ali")
+st.caption("Grupo BlueBalloon · JimTech · GreenBalloon · Gestión de conocimiento, videos y empleados")
 
 with st.expander("ℹ️ ¿Qué es este panel y cómo funciona?", expanded=False):
     st.markdown("""
-    Este panel le enseña información al Agente Blue y registra a los empleados nuevos.
+    Este panel le enseña información al Agente Ali y registra a los empleados nuevos.
 
     **Estructura del Grupo:**
-    Grupo Blue Balloon es la empresa holding. Debajo están las empresas hermanas: JimTech, Green Balloon, etc.
-    Cada empresa tiene sus propias áreas y puestos. Blue sabe distinguir entre ellas.
+    Grupo BlueBalloon es la empresa holding. Debajo están las empresas hermanas: JimTech, GreenBalloon, etc.
+    Cada empresa tiene sus propias áreas y puestos. Ali sabe distinguir entre ellas.
 
     **¿Qué debes hacer aquí?**
     1. 📚 **Base de conocimiento** → Sube documentos indicando a qué empresa pertenecen.
