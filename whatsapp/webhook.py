@@ -2,11 +2,13 @@
 whatsapp/webhook.py
 Servidor webhook del Agente Blue — BlueBallon.
 Integración con Meta Cloud API (WhatsApp Business).
-Soporta: texto, audio (STT+TTS), y videos automáticos.
+Soporta: texto, audio (STT+TTS), videos automáticos,
+         filtro de echoes y deduplicación de mensajes.
 """
 
 import os
 import uuid
+import asyncio
 import tempfile
 import httpx
 from pathlib import Path
@@ -38,7 +40,9 @@ META_API_URL = f"https://graph.facebook.com/v22.0/{META_PHONE_NUMBER_ID}/message
 # ─── App ─────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Agente Blue — Meta WhatsApp")
-sesiones: dict[str, SesionJIM] = {}
+
+sesiones:            dict[str, SesionJIM] = {}
+mensajes_procesados: set[str]             = set()
 
 Path("audio_sesion").mkdir(exist_ok=True)
 app.mount("/audio", StaticFiles(directory="audio_sesion"), name="audio")
@@ -59,7 +63,6 @@ def verificar_webhook(
     hub_verify_token: str = Query(None, alias="hub.verify_token"),
     hub_challenge:    str = Query(None, alias="hub.challenge"),
 ):
-    """Meta llama a este GET una sola vez al configurar el webhook."""
     if hub_mode == "subscribe" and hub_verify_token == META_VERIFY_TOKEN:
         print("✅ Webhook verificado por Meta")
         return PlainTextResponse(content=hub_challenge)
@@ -71,7 +74,6 @@ def verificar_webhook(
 
 @app.post("/webhook")
 async def recibir_mensaje(request: Request):
-    """Meta envía cada mensaje entrante como JSON a este endpoint."""
     data = await request.json()
 
     try:
@@ -80,22 +82,32 @@ async def recibir_mensaje(request: Request):
         mensajes = changes.get("messages", [])
 
         if not mensajes:
-            return {"status": "ok"}  # notificación de estado, ignorar
+            return {"status": "ok"}
 
-        mensaje        = mensajes[0]
+        mensaje = mensajes[0]
+
+        # Filtrar echoes
+        if mensaje.get("from") == META_PHONE_NUMBER_ID:
+            print("ℹ️  Echo ignorado")
+            return {"status": "ok"}
+
+        # Filtrar duplicados
+        mensaje_id = mensaje.get("id", "")
+        if mensaje_id in mensajes_procesados:
+            print(f"ℹ️  Duplicado ignorado: {mensaje_id}")
+            return {"status": "ok"}
+        mensajes_procesados.add(mensaje_id)
+
         numero_usuario = normalizar_numero_mx(mensaje["from"])
         tipo_mensaje   = mensaje["type"]
 
         print(f"\n{'='*40}")
-        print(f"📩 Mensaje de: {numero_usuario}")
-        print(f"   Tipo: {tipo_mensaje}")
+        print(f"📩 Mensaje de: {numero_usuario} | Tipo: {tipo_mensaje}")
 
-        # ── Sesión ────────────────────────────────────────────────────────────
         if numero_usuario not in sesiones:
             sesiones[numero_usuario] = SesionJIM()
         sesion = sesiones[numero_usuario]
 
-        # ── Obtener texto del mensaje ─────────────────────────────────────────
         texto_usuario = ""
 
         if tipo_mensaje == "text":
@@ -115,34 +127,8 @@ async def recibir_mensaje(request: Request):
             await enviar_texto_meta(numero_usuario, "Mándame un mensaje de texto o una nota de voz 🎙")
             return {"status": "ok"}
 
-        # ── Procesar con Blue ─────────────────────────────────────────────────
-        print("🤖 Procesando con Blue...")
-        respuesta_texto = procesar_turno(sesion, texto_usuario)
-        print(f"   Blue: '{respuesta_texto[:100]}...'")
-
-        # ── Enviar audio de respuesta ─────────────────────────────────────────
-        try:
-            print("🔊 Generando audio...")
-            url_audio = generar_y_subir_audio(respuesta_texto)
-            print(f"   URL audio: {url_audio}")
-            await enviar_audio_meta(numero_usuario, url_audio, respuesta_texto)
-        except Exception as e:
-            print(f"⚠️  Error audio: {e} — enviando solo texto")
-            await enviar_texto_meta(numero_usuario, respuesta_texto)
-
-        # ── Enviar video si hay uno relevante ─────────────────────────────────
-        area_emp  = sesion.empleado.get("area", "")   if sesion.empleado else ""
-        puesto_emp = sesion.empleado.get("puesto", "") if sesion.empleado else ""
-
-        video = buscar_video_relevante(
-            tema          = texto_usuario,
-            nombre_area   = area_emp,
-            nombre_puesto = puesto_emp,
-        )
-
-        if video:
-            print(f"🎥 Enviando video: '{video['titulo']}'")
-            await enviar_video_meta(numero_usuario, video["url_video"], video["titulo"])
+        # Procesar en segundo plano — Meta recibe 200 OK inmediatamente
+        asyncio.create_task(procesar_y_responder(numero_usuario, texto_usuario, sesion))
 
     except (KeyError, IndexError) as e:
         print(f"⚠️  Error parseando mensaje: {e}")
@@ -150,14 +136,57 @@ async def recibir_mensaje(request: Request):
     return {"status": "ok"}
 
 
+# ─── Procesamiento en segundo plano ──────────────────────────────────────────
+
+async def procesar_y_responder(numero: str, texto: str, sesion: SesionJIM):
+    try:
+        # 1. Respuesta de Blue
+        print("🤖 Procesando con Blue...")
+        respuesta_texto = procesar_turno(sesion, texto)
+        print(f"   Blue: '{respuesta_texto[:100]}...'")
+
+        # 2. Generar y enviar audio
+        try:
+            print("🔊 Generando audio...")
+            url_audio = generar_y_subir_audio(respuesta_texto)
+            print(f"   URL audio: {url_audio}")
+            await enviar_audio_meta(numero, url_audio, respuesta_texto)
+            print("   ✅ Audio enviado")
+        except Exception as e:
+            print(f"⚠️  Error audio: {e} — enviando solo texto")
+            await enviar_texto_meta(numero, respuesta_texto)
+            print("   ✅ Texto enviado como fallback")
+
+        # 3. Buscar y enviar video (SIEMPRE, no solo cuando falla el audio)
+        tema_video = sesion.tema_video_pendiente
+        area_emp   = sesion.empleado.get("area", "")   if sesion.empleado else ""
+        puesto_emp = sesion.empleado.get("puesto", "") if sesion.empleado else ""
+
+        print(f"🔍 Buscando video — tema: '{tema_video}' área: '{area_emp}'")
+        video = buscar_video_relevante(tema_video or texto, area_emp, puesto_emp)
+        print(f"   Video encontrado: {video['titulo'] if video else 'ninguno'}")
+
+        if video:
+            # Solo enviar si no se ha enviado antes en esta sesión
+            if video["id"] not in sesion.videos_enviados:
+                frase = f"Mira este video sobre {video['titulo'].lower()}, te va a dar más contexto."
+                await enviar_texto_meta(numero, frase)
+                await asyncio.sleep(1)
+                await enviar_video_meta(numero, video["url_video"], video["titulo"])
+                print(f"🎥 Video enviado: '{video['titulo']}'")
+                sesion.videos_enviados.add(video["id"])
+                sesion.tema_video_pendiente = ""
+            else:
+                print(f"ℹ️  Video '{video['titulo']}' ya enviado en esta sesión")
+
+    except Exception as e:
+        print(f"⚠️  Error en procesar_y_responder: {e}")
+        await enviar_texto_meta(numero, "Ocurrió un error. Por favor intenta de nuevo.")
+
+
 # ─── Helpers número ───────────────────────────────────────────────────────────
 
 def normalizar_numero_mx(numero: str) -> str:
-    """
-    WhatsApp México a veces agrega un '1' extra después del código de país.
-    Meta API necesita el formato: 52XXXXXXXXXX (sin el 1 extra).
-    Ej: 5215574243703 → 525574243703
-    """
     numero = numero.replace("whatsapp:", "").replace("+", "").strip()
     if numero.startswith("521") and len(numero) == 13:
         numero = "52" + numero[3:]
@@ -167,7 +196,6 @@ def normalizar_numero_mx(numero: str) -> str:
 # ─── Helpers Meta API ─────────────────────────────────────────────────────────
 
 async def descargar_y_transcribir_meta(audio_id: str) -> str:
-    """Descarga el audio de Meta y transcribe con Whisper."""
     headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}"}
     carpeta = Path("audio_sesion")
     carpeta.mkdir(exist_ok=True)
@@ -193,7 +221,6 @@ async def descargar_y_transcribir_meta(audio_id: str) -> str:
 
 
 async def enviar_texto_meta(numero: str, texto: str):
-    """Envía un mensaje de texto por WhatsApp."""
     headers = {
         "Authorization": f"Bearer {META_ACCESS_TOKEN}",
         "Content-Type":  "application/json",
@@ -211,7 +238,6 @@ async def enviar_texto_meta(numero: str, texto: str):
 
 
 async def enviar_audio_meta(numero: str, url_audio: str, caption: str = ""):
-    """Envía una nota de voz por WhatsApp."""
     headers = {
         "Authorization": f"Bearer {META_ACCESS_TOKEN}",
         "Content-Type":  "application/json",
@@ -230,7 +256,6 @@ async def enviar_audio_meta(numero: str, url_audio: str, caption: str = ""):
 
 
 async def enviar_video_meta(numero: str, url_video: str, caption: str = ""):
-    """Envía un video por WhatsApp. Límite: 16 MB."""
     headers = {
         "Authorization": f"Bearer {META_ACCESS_TOKEN}",
         "Content-Type":  "application/json",
@@ -248,12 +273,12 @@ async def enviar_video_meta(numero: str, url_video: str, caption: str = ""):
         resp = await cliente.post(META_API_URL, headers=headers, json=payload)
         if resp.status_code != 200:
             print(f"⚠️  Error enviando video: {resp.text}")
+            await enviar_texto_meta(numero, f"🎥 {caption}\n{url_video}")
 
 
-# ─── Helpers audio ────────────────────────────────────────────────────────────
+# ─── Helper audio ─────────────────────────────────────────────────────────────
 
 def generar_y_subir_audio(texto: str) -> str:
-    """Genera audio .ogg con OpenAI TTS, sube a Supabase y retorna URL pública."""
     carpeta = Path("audio_sesion")
     carpeta.mkdir(exist_ok=True)
 

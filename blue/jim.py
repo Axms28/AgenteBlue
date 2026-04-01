@@ -1,13 +1,6 @@
 """
-agente/jim.py
-Orquestador conversacional del Agente JIM — BlueBallon.
-
-Flujo por turno:
-  1. Detectar nombre del empleado si aún no se conoce
-  2. Buscar perfil en empleados_jim
-  3. Consultar RAG con contexto del empleado
-  4. Llamar a Claude con historial + contexto
-  5. Guardar evento de comprensión para el panel de resumen
+blue/jim.py
+Orquestador conversacional del Agente Blue — Grupo Blue Balloon.
 """
 
 import os
@@ -22,10 +15,8 @@ load_dotenv()
 cliente = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODELO  = "claude-sonnet-4-5"
 
-# ─── System prompt base de JIM ────────────────────────────────────────────────
-
 SYSTEM_PROMPT = """
-Eres Blue, el agente de onboarding de BlueBallon. Tu misión es dar la bienvenida
+Eres Blue, el agente de onboarding de Grupo Blue Balloon. Tu misión es dar la bienvenida
 a los nuevos empleados y guiarlos por su proceso de inducción de forma cálida,
 clara y profesional.
 
@@ -34,61 +25,59 @@ PERSONALIDAD:
 - Amigable y cercano, pero profesional
 - Usas el nombre del empleado frecuentemente
 - Explicas las cosas con claridad, sin jerga innecesaria
-- Haces preguntas cortas para verificar que el empleado entendió
+
+ESTRUCTURA DEL GRUPO:
+Grupo Blue Balloon es la empresa holding. Está conformada por varias empresas hermanas
+como JimTech, Green Balloon y otras subsidiarias. Cada una tiene sus propias áreas y puestos.
+Cuando hables con el empleado, ten claro a qué empresa y área pertenece.
 
 FLUJO DE ONBOARDING:
-Sigue este orden durante la conversación:
-1. Bienvenida personalizada (usa el nombre y área del empleado)
-2. Presentación de la empresa (misión, visión y valores)
-3. Presentación de su área específica y su función
-4. Explicación de su puesto y responsabilidades
-5. Políticas generales (horarios, beneficios, primeros 30 días)
-6. Cierre: invitar al empleado a hacer preguntas
+1. Bienvenida personalizada (usa el nombre, subsidiaria y área del empleado)
+2. Presentación del Grupo Blue Balloon (misión, visión y valores generales)
+3. Presentación de su empresa específica (JimTech, Green Balloon, etc.)
+4. Presentación de su área dentro de esa empresa
+5. Explicación de su puesto y responsabilidades
+6. Políticas generales (horarios, beneficios, primeros 30 días)
+7. Cierre: invitar al empleado a hacer preguntas
 
 REGLAS:
 - Nunca inventes información. Si no la tienes en el contexto, dilo honestamente
 - Avanza un tema a la vez, no abrumes con todo de golpe
-- Si el empleado pregunta algo fuera del onboarding, responde brevemente
-  y regresa al flujo
+- Si el empleado pregunta algo fuera del onboarding, responde brevemente y regresa al flujo
 - Cuando termines un tema, pregunta si tiene dudas antes de continuar
 - Si detectas que el empleado no entendió algo, explícalo de otra forma
+- Nunca uses markdown, asteriscos, negritas, cursivas ni listas con guiones
+- Escribe siempre en texto plano, como si estuvieras hablando en voz
+- En lugar de listas, di "primero... segundo... y tercero..."
+- Usa puntos y comas para pausas naturales
+- Responde en máximo 3 oraciones por turno, sé conciso
+- No expliques todo de golpe, ve un tema a la vez
+- Al final de cada respuesta, si el tema amerita un video de apoyo,
+  agrega en una línea separada exactamente esto:
+  [VIDEO: nombre del tema]
+  Ejemplos: [VIDEO: bienvenida], [VIDEO: JimTech], [VIDEO: Director General]
+  Si no hay video relevante, no agregues nada extra.
 
 CONTEXTO DEL EMPLEADO:
 {contexto_empleado}
 
-INFORMACIÓN RELEVANTE DE BLUEBALLON:
+INFORMACIÓN RELEVANTE DEL GRUPO:
 {contexto_rag}
 """
 
-# ─── Estado de sesión ─────────────────────────────────────────────────────────
 
 class SesionJIM:
-    """
-    Mantiene el estado completo de una conversación de onboarding.
-
-    Atributos:
-        historial        : Lista de mensajes en formato Anthropic.
-        empleado         : Dict con datos del empleado (o None si no se identificó).
-        etapa            : Etapa actual del onboarding (1-6).
-        eventos          : Lista de eventos de comprensión para el panel.
-        nombre_detectado : Nombre extraído del primer mensaje del empleado.
-    """
-
     def __init__(self):
-        self.historial:         list[dict] = []
-        self.empleado:          dict | None = None
-        self.etapa:             int = 1
-        self.eventos:           list[dict] = []
-        self.nombre_detectado:  str = ""
+        self.historial:             list[dict] = []
+        self.empleado:              dict | None = None
+        self.etapa:                 int = 1
+        self.eventos:               list[dict] = []
+        self.nombre_detectado:      str = ""
+        self.tema_video_pendiente:  str = ""
+        self.videos_enviados:       set = set()
 
-
-# ─── Detección de nombre ──────────────────────────────────────────────────────
 
 def extraer_nombre(mensaje: str) -> str:
-    """
-    Intenta extraer un nombre propio del mensaje del empleado.
-    Detecta patrones como: 'soy Axel', 'me llamo Ana', 'hola, soy Carlos'.
-    """
     patrones = [
         r"(?:soy|me llamo|mi nombre es)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)",
         r"^hola[,\s]+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)",
@@ -101,26 +90,24 @@ def extraer_nombre(mensaje: str) -> str:
     return ""
 
 
-# ─── Evaluador silencioso de comprensión ─────────────────────────────────────
+def extraer_señal_video(respuesta: str) -> tuple[str, str]:
+    match = re.search(r'\[VIDEO:\s*(.+?)\]', respuesta, re.IGNORECASE)
+    if match:
+        tema_video   = match.group(1).strip()
+        texto_limpio = re.sub(r'\[VIDEO:\s*.+?\]', '', respuesta).strip()
+        return texto_limpio, tema_video
+    return respuesta.strip(), ""
 
-def evaluar_comprension(
-    turno_empleado: str,
-    respuesta_jim: str,
-    etapa: int,
-    empleado: dict,
-) -> dict | None:
-    """
-    Usa Claude Haiku para detectar si el empleado comprendió el tema.
-    Retorna un dict con el evento o None si no hay suficiente información.
-    Este evaluador corre en segundo plano y NO bloquea la conversación.
-    """
+
+def evaluar_comprension(turno_empleado, respuesta_blue, etapa, empleado) -> dict | None:
     etapas = {
         1: "bienvenida",
-        2: "misión y visión",
-        3: "área de trabajo",
-        4: "puesto y responsabilidades",
-        5: "políticas generales",
-        6: "cierre",
+        2: "misión y visión del grupo",
+        3: "empresa/subsidiaria",
+        4: "área de trabajo",
+        5: "puesto y responsabilidades",
+        6: "políticas generales",
+        7: "cierre",
     }
     tema = etapas.get(etapa, "general")
 
@@ -128,7 +115,7 @@ def evaluar_comprension(
 
 Tema tratado: {tema}
 Respuesta del empleado: "{turno_empleado}"
-Explicación de Blue: "{respuesta_jim[:500]}"
+Explicación de Blue: "{respuesta_blue[:500]}"
 
 Responde ÚNICAMENTE con un JSON válido, sin texto adicional:
 {{
@@ -144,76 +131,63 @@ Responde ÚNICAMENTE con un JSON válido, sin texto adicional:
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
         )
-        texto = respuesta.content[0].text.strip()
-        evento = json.loads(texto)
-        evento["empleado"] = empleado.get("nombre", "") if empleado else ""
-        evento["area"]     = empleado.get("area", "") if empleado else ""
-        evento["etapa"]    = etapa
+        evento = json.loads(respuesta.content[0].text.strip())
+        evento["empleado"]    = empleado.get("nombre", "")      if empleado else ""
+        evento["subsidiaria"] = empleado.get("subsidiaria", "") if empleado else ""
+        evento["area"]        = empleado.get("area", "")        if empleado else ""
+        evento["etapa"]       = etapa
         return evento
     except Exception:
         return None
 
 
-# ─── Turno principal ──────────────────────────────────────────────────────────
-
 def procesar_turno(sesion: SesionJIM, mensaje_usuario: str) -> str:
-    """
-    Procesa un turno de conversación y retorna la respuesta de Blue.
-
-    Args:
-        sesion          : Estado actual de la sesión.
-        mensaje_usuario : Texto enviado por el empleado.
-
-    Returns:
-        Respuesta de Blue como string.
-    """
-
-    # 1. Detectar nombre si aún no se tiene
+    # 1. Detectar nombre
     if not sesion.nombre_detectado:
         nombre = extraer_nombre(mensaje_usuario)
         if nombre:
             sesion.nombre_detectado = nombre
-            empleado = buscar_empleado(nombre)
-            sesion.empleado = empleado
+            sesion.empleado = buscar_empleado(nombre)
 
-    # 2. Construir contexto del empleado para el system prompt
+    # 2. Contexto del empleado
     if sesion.empleado:
         emp = sesion.empleado
         contexto_empleado = (
             f"Nombre: {emp.get('nombre', '')} {emp.get('apellido', '')}\n"
+            f"Empresa (subsidiaria): {emp.get('subsidiaria', 'Grupo Blue Balloon')}\n"
             f"Área: {emp.get('area', '')}\n"
             f"Puesto: {emp.get('puesto', '')}\n"
             f"Email: {emp.get('email', '')}\n"
             f"Fecha de ingreso: {emp.get('fecha_ingreso', '')}"
         )
-        area_emp  = emp.get("area", "")
-        puesto_emp = emp.get("puesto", "")
+        subsidiaria = emp.get("subsidiaria", "")
+        area_emp    = emp.get("area", "")
+        puesto_emp  = emp.get("puesto", "")
     else:
         contexto_empleado = "Empleado no identificado aún."
-        area_emp  = ""
-        puesto_emp = ""
+        subsidiaria = ""
+        area_emp    = ""
+        puesto_emp  = ""
 
-    # 3. Consultar RAG con el mensaje actual
+    # 3. RAG con subsidiaria
     contexto_rag = buscar_contexto(
         pregunta      = mensaje_usuario,
+        subsidiaria   = subsidiaria,
         nombre_area   = area_emp,
         nombre_puesto = puesto_emp,
         top_k         = 4,
     )
 
-    # 4. Construir system prompt con contextos inyectados
+    # 4. System prompt
     system = SYSTEM_PROMPT.format(
         contexto_empleado = contexto_empleado,
         contexto_rag      = contexto_rag or "Sin contexto disponible aún.",
     )
 
-    # 5. Agregar mensaje del empleado al historial
-    sesion.historial.append({
-        "role":    "user",
-        "content": mensaje_usuario,
-    })
+    # 5. Historial
+    sesion.historial.append({"role": "user", "content": mensaje_usuario})
 
-    # 6. Llamar a Claude Sonnet
+    # 6. Claude Sonnet
     respuesta = cliente.messages.create(
         model      = MODELO,
         max_tokens = 1024,
@@ -221,38 +195,29 @@ def procesar_turno(sesion: SesionJIM, mensaje_usuario: str) -> str:
         messages   = sesion.historial,
     )
 
-    respuesta_jim = respuesta.content[0].text
+    # 7. Extraer texto limpio y señal de video
+    respuesta_limpia, tema_video = extraer_señal_video(respuesta.content[0].text)
+    sesion.tema_video_pendiente = tema_video
 
-    # 7. Agregar respuesta de JIM al historial
-    sesion.historial.append({
-        "role":    "assistant",
-        "content": respuesta_jim,
-    })
+    # 8. Historial limpio (una sola vez)
+    sesion.historial.append({"role": "assistant", "content": respuesta_limpia})
 
-    # 8. Evaluación silenciosa de comprensión (no bloquea la respuesta)
-    evento = evaluar_comprension(
-        turno_empleado = mensaje_usuario,
-        respuesta_jim  = respuesta_jim,
-        etapa          = sesion.etapa,
-        empleado       = sesion.empleado,
-    )
+    # 9. Evaluación silenciosa
+    evento = evaluar_comprension(mensaje_usuario, respuesta_limpia, sesion.etapa, sesion.empleado)
     if evento:
         sesion.eventos.append(evento)
 
-    return respuesta_jim
+    return respuesta_limpia
 
 
 def obtener_resumen_sesion(sesion: SesionJIM) -> str:
-    """
-    Genera un resumen de la sesión para el panel de RRHH.
-    Llama a Claude con todos los eventos acumulados.
-    """
     if not sesion.eventos:
         return "Sin eventos registrados en esta sesión."
 
     nombre = sesion.empleado.get("nombre", "el empleado") if sesion.empleado else "el empleado"
+    sub    = sesion.empleado.get("subsidiaria", "")        if sesion.empleado else ""
 
-    prompt = f"""Genera un resumen ejecutivo del onboarding de {nombre} basado en estos eventos:
+    prompt = f"""Genera un resumen ejecutivo del onboarding de {nombre} ({sub}) basado en estos eventos:
 
 {json.dumps(sesion.eventos, ensure_ascii=False, indent=2)}
 
@@ -261,7 +226,8 @@ El resumen debe:
 - Indicar qué temas necesitan refuerzo
 - Dar una evaluación general (excelente / satisfactoria / necesita seguimiento)
 - Ser breve, máximo 5 oraciones
-- Estar escrito para el área de RRHH"""
+- Estar escrito para el área de RRHH
+- Escribir en texto plano sin markdown"""
 
     respuesta = cliente.messages.create(
         model      = "claude-haiku-4-5-20251001",

@@ -16,15 +16,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 load_dotenv()
 
-# ─── Configuración de página ──────────────────────────────────────────────────
-
-st.set_page_config(
-    page_title="Admin — Agente Blue",
-    page_icon="🤖",
-    layout="wide",
-)
-
-# ─── Clientes ────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Admin — Agente Blue", page_icon="🤖", layout="wide")
 
 @st.cache_resource
 def obtener_clientes():
@@ -35,6 +27,13 @@ def obtener_clientes():
 
 cliente_openai, cliente_supabase = obtener_clientes()
 
+# ─── Subsidiarias disponibles ─────────────────────────────────────────────────
+# Agrega aquí las empresas del grupo — aparecerán en todos los formularios
+SUBSIDIARIAS = [
+    "Grupo Blue Balloon (general)",
+    "JimTech",
+    "Green Balloon",
+]
 
 # ─── Helpers conocimiento ─────────────────────────────────────────────────────
 
@@ -50,16 +49,22 @@ def generar_embedding(texto):
         input=texto.replace("\n", " "),
     ).data[0].embedding
 
-def ingestar_texto(contenido, categoria, nombre_area, nombre_puesto, prioridad, no_dividir=False, chunk_size=800):
+def ingestar_texto(contenido, categoria, subsidiaria, nombre_area, nombre_puesto, prioridad, no_dividir=False, chunk_size=800):
+    # Si es info general del grupo, subsidiaria queda vacía para que el RAG la incluya siempre
+    sub_guardar = "" if subsidiaria == "Grupo Blue Balloon (general)" else subsidiaria
     chunks = [contenido.strip()] if no_dividir else obtener_divisor(chunk_size).split_text(contenido.strip())
     insertados = 0
     for chunk in chunks:
         if len(chunk.strip()) < 30:
             continue
         cliente_supabase.table("conocimiento_jim").insert({
-            "contenido": chunk, "vector": generar_embedding(chunk),
-            "categoria": categoria, "nombre_area": nombre_area or "",
-            "nombre_puesto": nombre_puesto or "", "prioridad": prioridad,
+            "contenido":     chunk,
+            "vector":        generar_embedding(chunk),
+            "categoria":     categoria,
+            "subsidiaria":   sub_guardar,
+            "nombre_area":   nombre_area or "",
+            "nombre_puesto": nombre_puesto or "",
+            "prioridad":     prioridad,
         }).execute()
         insertados += 1
         time.sleep(0.1)
@@ -72,29 +77,32 @@ def extraer_texto_docx(archivo_bytes):
 
 def obtener_conocimiento():
     return cliente_supabase.table("conocimiento_jim").select(
-        "id, categoria, nombre_area, nombre_puesto, prioridad, contenido, creado_en"
+        "id, subsidiaria, categoria, nombre_area, nombre_puesto, prioridad, contenido, creado_en"
     ).order("creado_en", desc=True).execute().data or []
 
 def eliminar_chunk(chunk_id):
     cliente_supabase.table("conocimiento_jim").delete().eq("id", chunk_id).execute()
 
-def eliminar_por_filtro(categoria, nombre_area="", nombre_puesto=""):
+def eliminar_por_filtro(categoria, subsidiaria="", nombre_area="", nombre_puesto=""):
     q = cliente_supabase.table("conocimiento_jim").delete().eq("categoria", categoria)
+    if subsidiaria.strip():
+        q = q.eq("subsidiaria", subsidiaria.strip())
     if nombre_area.strip():
         q = q.eq("nombre_area", nombre_area.strip())
     if nombre_puesto.strip():
         q = q.eq("nombre_puesto", nombre_puesto.strip())
     q.execute()
 
-
 # ─── Helpers empleados ────────────────────────────────────────────────────────
 
 def obtener_empleados():
     return cliente_supabase.table("empleados_jim").select("*").order("creado_en", desc=True).execute().data or []
 
-def registrar_empleado(nombre, apellido, area, puesto, email, fecha_ingreso):
+def registrar_empleado(nombre, apellido, subsidiaria, area, puesto, email, fecha_ingreso):
+    sub_guardar = "" if subsidiaria == "Grupo Blue Balloon (general)" else subsidiaria
     cliente_supabase.table("empleados_jim").insert({
         "nombre": nombre.strip(), "apellido": apellido.strip(),
+        "subsidiaria": sub_guardar,
         "area": area.strip(), "puesto": puesto.strip(),
         "email": email.strip(), "fecha_ingreso": str(fecha_ingreso), "activo": True,
     }).execute()
@@ -105,30 +113,25 @@ def eliminar_empleado(emp_id):
 def toggle_empleado(emp_id, activo):
     cliente_supabase.table("empleados_jim").update({"activo": activo}).eq("id", emp_id).execute()
 
-
 # ─── Helpers videos ───────────────────────────────────────────────────────────
 
 BUCKET_VIDEOS = "videos-blue"
 
-def subir_video_supabase(archivo_bytes: bytes, extension: str) -> str:
-    """Sube el video a Supabase Storage y retorna la URL pública."""
+def subir_video_supabase(archivo_bytes, extension):
     nombre = f"video_{uuid.uuid4().hex[:10]}.{extension}"
     cliente_supabase.storage.from_(BUCKET_VIDEOS).upload(
-        path         = nombre,
-        file         = archivo_bytes,
-        file_options = {"content-type": f"video/{extension}"},
+        path=nombre, file=archivo_bytes,
+        file_options={"content-type": f"video/{extension}"},
     )
     return cliente_supabase.storage.from_(BUCKET_VIDEOS).get_public_url(nombre)
 
-def registrar_video(titulo, descripcion, categoria, nombre_area, nombre_puesto, url_video):
+def registrar_video(titulo, descripcion, categoria, subsidiaria, nombre_area, nombre_puesto, url_video):
+    sub_guardar = "" if subsidiaria == "Grupo Blue Balloon (general)" else subsidiaria
     cliente_supabase.table("videos_jim").insert({
-        "titulo":        titulo.strip(),
-        "descripcion":   descripcion.strip(),
-        "categoria":     categoria,
-        "nombre_area":   nombre_area or "",
-        "nombre_puesto": nombre_puesto or "",
-        "url_video":     url_video,
-        "activo":        True,
+        "titulo": titulo.strip(), "descripcion": descripcion.strip(),
+        "categoria": categoria, "subsidiaria": sub_guardar,
+        "nombre_area": nombre_area or "", "nombre_puesto": nombre_puesto or "",
+        "url_video": url_video, "activo": True,
     }).execute()
 
 def obtener_videos():
@@ -144,25 +147,24 @@ def toggle_video(video_id, activo):
 # ─── UI ──────────────────────────────────────────────────────────────────────
 
 st.title("🤖 Panel de administración — Agente Blue")
-st.caption("Grupo Blue Balloon · Gestión de conocimiento, videos y empleados")
+st.caption("Grupo Blue Balloon · JimTech · Green Balloon · Gestión de conocimiento, videos y empleados")
 
 with st.expander("ℹ️ ¿Qué es este panel y cómo funciona?", expanded=False):
     st.markdown("""
-    Este panel te permite **enseñarle información al Agente Blue**, **subir videos de onboarding** y **registrar a los empleados nuevos**.
+    Este panel le enseña información al Agente Blue y registra a los empleados nuevos.
 
-    **¿Cómo aprende Blue?**
-    Tú subes la información de la empresa y Blue la guarda en su memoria. Cuando un empleado nuevo le escribe por WhatsApp, Blue responde con información real y personalizada — y puede enviarle videos automáticamente cuando sea relevante.
+    **Estructura del Grupo:**
+    Grupo Blue Balloon es la empresa holding. Debajo están las empresas hermanas: JimTech, Green Balloon, etc.
+    Cada empresa tiene sus propias áreas y puestos. Blue sabe distinguir entre ellas.
 
     **¿Qué debes hacer aquí?**
-    1. 📚 **Base de conocimiento** → Sube documentos de la empresa: misión, visión, áreas, puestos, políticas.
-    2. 🎥 **Videos** → Sube videos de bienvenida, tutoriales o presentaciones de áreas. Blue los enviará en el momento correcto.
-    3. 👥 **Empleados** → Registra a cada persona nueva antes de que empiece su onboarding.
+    1. 📚 **Base de conocimiento** → Sube documentos indicando a qué empresa pertenecen.
+    2. 🎥 **Videos** → Sube videos de onboarding por empresa y área.
+    3. 👥 **Empleados** → Registra a cada empleado indicando su empresa, área y puesto.
     """)
 
 tab_conocimiento, tab_videos, tab_empleados = st.tabs([
-    "📚 Base de conocimiento",
-    "🎥 Videos",
-    "👥 Empleados",
+    "📚 Base de conocimiento", "🎥 Videos", "👥 Empleados"
 ])
 
 
@@ -174,30 +176,35 @@ with tab_conocimiento:
 
     st.info(
         "**¿Qué es la base de conocimiento?**  \n"
-        "Es la memoria de Blue. Todo lo que subas aquí es lo que Blue podrá decirle a los empleados. "
-        "Si no está aquí, Blue no lo sabe.",
+        "Es la memoria de Blue. Todo lo que subas aquí es lo que Blue le dirá a los empleados.  \n"
+        "Puedes subir información del Grupo en general, o específica de JimTech, Green Balloon, etc.",
         icon="🧠",
     )
 
     st.subheader("➕ Agregar nuevo contenido")
 
-    st.markdown("""
-    **Elige cómo quieres subir la información:**
-    - **Manual** → Escribes o pegas el texto directamente.
-    - **Documento Word** → Subes un .docx y Blue extrae el texto automáticamente.
-    - **Excel** → Subes varios documentos a la vez.
-    """)
-
-    modo_conocimiento = st.radio(
-        "Modo de carga",
+    modo = st.radio("Modo de carga",
         ["✍️  Manual (texto)", "📄 Documento Word (.docx)", "📊 Excel (carga masiva)"],
         horizontal=True,
     )
 
-    if modo_conocimiento == "✍️  Manual (texto)":
+    # ── Selector de empresa (común a todos los modos) ─────────────────────────
+    def selector_empresa(key_prefix=""):
+        return st.selectbox(
+            "¿A qué empresa pertenece este contenido? *",
+            SUBSIDIARIAS,
+            help="Grupo Blue Balloon (general) = aplica a todas las empresas. JimTech, Green Balloon = solo para esa empresa.",
+            key=f"sub_{key_prefix}",
+        )
+
+    # ── Manual ───────────────────────────────────────────────────────────────
+    if modo == "✍️  Manual (texto)":
         with st.form("form_conocimiento", clear_on_submit=True):
-            st.markdown("**1. ¿De qué tipo es este contenido?**")
-            st.caption("Esto le dice a Blue en qué contexto usar esta información.")
+            subsidiaria = st.selectbox(
+                "¿A qué empresa pertenece este contenido? *",
+                SUBSIDIARIAS,
+                help="Selecciona la empresa. Si es información del grupo en general (misión, visión), elige 'Grupo Blue Balloon (general)'.",
+            )
             categoria = st.selectbox("Categoría *", ["empresa", "area", "puesto", "politica"],
                 format_func=lambda x: {
                     "empresa":  "🏢 Empresa — misión, visión, historia, valores",
@@ -206,111 +213,114 @@ with tab_conocimiento:
                     "politica": "📋 Política / Reglamento",
                 }[x],
             )
-            st.markdown("**2. ¿A qué área y puesto pertenece?**")
-            st.caption("Si es información general de la empresa, deja estos campos vacíos.")
             col_a, col_b = st.columns(2)
             with col_a:
-                nombre_area = st.text_input("Nombre del área", placeholder="RRHH, JimTech, Ventas...",
-                    help="Área específica. Vacío = aplica a toda la empresa.")
+                nombre_area = st.text_input("Nombre del área (si aplica)", placeholder="Desarrollo, RRHH, Ventas...",
+                    help="Deja vacío si el contenido aplica a toda la empresa seleccionada.")
             with col_b:
-                nombre_puesto = st.text_input("Nombre del puesto (solo si aplica)", placeholder="Director General, Analista...",
-                    help="Solo si el contenido es de un puesto en particular.")
-            st.markdown("**3. Configuración**")
+                nombre_puesto = st.text_input("Nombre del puesto (si aplica)", placeholder="Director General, Analista...",
+                    help="Solo si el contenido es específico de un puesto.")
             col_c, col_d = st.columns(2)
             with col_c:
-                prioridad = st.select_slider("Prioridad", options=["baja", "media", "alta"], value="alta",
-                    help="Alta = Blue usa esto primero cuando es relevante.")
+                prioridad = st.select_slider("Prioridad", options=["baja", "media", "alta"], value="alta")
             with col_d:
-                chunk_size = st.select_slider("Tamaño de fragmento", options=[300, 500, 800, 1200, 2000], value=800,
-                    help="Documentos largos → 1200-2000. Textos cortos → 300-500.")
-            no_dividir = st.checkbox("No dividir (documento corto, menos de 300 palabras)", value=False)
-            st.markdown("**4. Pega el contenido aquí**")
-            contenido = st.text_area("Contenido *", height=260,
-                placeholder="Escribe o pega aquí el texto que quieres que Blue aprenda...")
+                chunk_size = st.select_slider("Tamaño de fragmento", options=[300, 500, 800, 1200, 2000], value=800)
+            no_dividir = st.checkbox("No dividir (documento corto, menos de 300 palabras)")
+            contenido = st.text_area("Contenido *", height=240,
+                placeholder="Pega aquí el texto que Blue debe aprender...")
             enviado = st.form_submit_button("⬆️  Guardar en la memoria de Blue", use_container_width=True, type="primary")
 
         if enviado:
             if not contenido.strip():
                 st.error("⚠️ El contenido no puede estar vacío.")
             else:
-                with st.spinner("Guardando en la memoria de Blue..."):
-                    n = ingestar_texto(contenido, categoria, nombre_area, nombre_puesto, prioridad, no_dividir, chunk_size)
-                st.success(f"✅ ¡Listo! {n} fragmento(s) guardados en la memoria de Blue.")
+                with st.spinner("Procesando y guardando..."):
+                    n = ingestar_texto(contenido, categoria, subsidiaria, nombre_area, nombre_puesto, prioridad, no_dividir, chunk_size)
+                st.success(f"✅ {n} fragmento(s) guardados en la memoria de Blue.")
                 st.rerun()
 
-    elif modo_conocimiento == "📄 Documento Word (.docx)":
-        st.success(
-            "**¿Cómo funciona?**  \n"
-            "1. Selecciona el tipo de documento y el área/puesto.  \n"
-            "2. Sube el archivo Word (.docx).  \n"
-            "3. Verifica la vista previa del texto.  \n"
-            "4. Clic en 'Guardar' y listo.",
-            icon="📄",
-        )
+    # ── Word ─────────────────────────────────────────────────────────────────
+    elif modo == "📄 Documento Word (.docx)":
+        st.success("Sube el archivo Word y Blue extrae el texto automáticamente.", icon="📄")
         col_meta, col_cfg = st.columns(2)
         with col_meta:
-            st.markdown("**Información del documento**")
-            cat_docx = st.selectbox("¿Qué tipo de documento es?",
+            sub_docx = st.selectbox("¿A qué empresa pertenece?", SUBSIDIARIAS, key="sub_docx")
+            cat_docx = st.selectbox("Tipo de documento",
                 ["empresa", "area", "puesto", "politica"],
                 format_func=lambda x: {
-                    "empresa": "🏢 Información general de la empresa",
-                    "area": "🗂  Descripción de un área",
-                    "puesto": "👤 Perfil de un puesto",
-                    "politica": "📋 Política o reglamento",
+                    "empresa": "🏢 Empresa", "area": "🗂  Área",
+                    "puesto": "👤 Puesto", "politica": "📋 Política",
                 }[x], key="cat_docx",
             )
-            area_docx   = st.text_input("¿A qué área pertenece?", placeholder="RRHH, JimTech...", key="area_docx")
-            puesto_docx = st.text_input("¿Es el perfil de un puesto?", placeholder="Director General...", key="puesto_docx")
+            area_docx   = st.text_input("Área (si aplica)", key="area_docx")
+            puesto_docx = st.text_input("Puesto (si aplica)", key="puesto_docx")
             prio_docx   = st.select_slider("Prioridad", options=["baja", "media", "alta"], value="alta", key="prio_docx")
         with col_cfg:
-            st.markdown("**Configuración del procesamiento**")
-            chunk_docx  = st.select_slider("Tamaño de fragmento", options=[300, 500, 800, 1200, 2000], value=1200,
-                key="chunk_docx", help="Para perfiles de puesto y manuales se recomienda 1200.")
-            no_div_docx = st.checkbox("No dividir (documento muy corto)", value=False, key="nodiv_docx")
+            chunk_docx  = st.select_slider("Tamaño de fragmento", options=[300, 500, 800, 1200, 2000], value=1200, key="chunk_docx")
+            no_div_docx = st.checkbox("No dividir", key="nodiv_docx")
 
-        archivo_docx = st.file_uploader("Arrastra tu archivo Word (.docx) aquí", type=["docx"],
-            help="Solo .docx. Si tienes .doc, ábrelo en Word y guárdalo como .docx.")
+        archivo_docx = st.file_uploader("Arrastra tu archivo .docx aquí", type=["docx"])
         if archivo_docx:
             try:
                 texto_extraido = extraer_texto_docx(archivo_docx.read())
                 palabras = len(texto_extraido.split())
-                st.success(f"✅ '{archivo_docx.name}' leído: **{palabras} palabras** extraídas")
-                with st.expander("👁 Ver el texto que se va a guardar"):
-                    st.text(texto_extraido[:2000] + ("...\n[El texto continúa]" if len(texto_extraido) > 2000 else ""))
+                st.success(f"✅ '{archivo_docx.name}' leído: {palabras} palabras")
+                with st.expander("👁 Vista previa"):
+                    st.text(texto_extraido[:2000] + ("..." if len(texto_extraido) > 2000 else ""))
                 if st.button("⬆️  Guardar en la memoria de Blue", type="primary", use_container_width=True):
-                    with st.spinner(f"Procesando '{archivo_docx.name}'..."):
-                        n = ingestar_texto(texto_extraido, cat_docx, area_docx, puesto_docx, prio_docx, no_div_docx, chunk_docx)
-                    st.success(f"✅ ¡Listo! '{archivo_docx.name}' guardado en {n} fragmento(s).")
+                    with st.spinner("Procesando..."):
+                        n = ingestar_texto(texto_extraido, cat_docx, sub_docx, area_docx, puesto_docx, prio_docx, no_div_docx, chunk_docx)
+                    st.success(f"✅ {n} fragmento(s) guardados.")
                     st.balloons()
                     st.rerun()
             except Exception as e:
-                st.error(f"❌ No se pudo leer el archivo: {e}")
+                st.error(f"❌ Error: {e}")
 
+    # ── Excel ─────────────────────────────────────────────────────────────────
     else:
-        st.info("Descarga la plantilla, llénala y súbela aquí.", icon="📊")
+        st.info("Cada fila del Excel es un documento. Descarga la plantilla para ver el formato.", icon="📊")
+        st.markdown("""
+        | Columna | Descripción | Ejemplo |
+        |---|---|---|
+        | `subsidiaria` | Empresa del grupo | `JimTech`, `Green Balloon`, vacío = general |
+        | `categoria` | Tipo | `empresa`, `area`, `puesto`, `politica` |
+        | `nombre_area` | Área | `Desarrollo`, `RRHH` |
+        | `nombre_puesto` | Puesto | `Director General` |
+        | `prioridad` | Importancia | `alta`, `media`, `baja` |
+        | `contenido` | Texto completo | El documento |
+        """)
         plantilla = pd.DataFrame([{
-            "categoria": "area", "nombre_area": "JimTech", "nombre_puesto": "",
-            "prioridad": "alta", "contenido": "JimTech es el área de desarrollo...",
+            "subsidiaria": "JimTech", "categoria": "area", "nombre_area": "Desarrollo",
+            "nombre_puesto": "", "prioridad": "alta", "contenido": "El área de Desarrollo de JimTech...",
+        }, {
+            "subsidiaria": "", "categoria": "empresa", "nombre_area": "",
+            "nombre_puesto": "", "prioridad": "alta", "contenido": "Grupo Blue Balloon es una empresa...",
         }])
         buf = io.BytesIO()
         plantilla.to_excel(buf, index=False)
-        st.download_button("⬇️  Descargar plantilla Excel", data=buf.getvalue(),
+        st.download_button("⬇️  Descargar plantilla", data=buf.getvalue(),
             file_name="plantilla_conocimiento_blue.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        archivo = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"])
+        archivo = st.file_uploader("Sube tu Excel", type=["xlsx"])
         if archivo:
             df = pd.read_excel(archivo)
-            if not {"categoria", "contenido"}.issubset(set(df.columns)):
-                st.error("⚠️ Faltan columnas obligatorias: `categoria` y `contenido`.")
+            if "contenido" not in df.columns:
+                st.error("⚠️ Falta la columna `contenido`.")
             else:
                 st.dataframe(df, use_container_width=True)
-                if st.button("⬆️  Subir todo a la memoria de Blue", type="primary"):
+                if st.button("⬆️  Subir todo", type="primary"):
                     total = 0
                     barra = st.progress(0)
                     for i, fila in df.iterrows():
-                        barra.progress((i + 1) / len(df), text=f"Guardando {i+1}/{len(df)}...")
-                        total += ingestar_texto(str(fila.get("contenido", "")), str(fila.get("categoria", "empresa")),
-                            str(fila.get("nombre_area", "")), str(fila.get("nombre_puesto", "")), str(fila.get("prioridad", "alta")))
+                        barra.progress((i+1)/len(df), text=f"Guardando {i+1}/{len(df)}...")
+                        total += ingestar_texto(
+                            str(fila.get("contenido", "")),
+                            str(fila.get("categoria", "empresa")),
+                            str(fila.get("subsidiaria", "")),
+                            str(fila.get("nombre_area", "")),
+                            str(fila.get("nombre_puesto", "")),
+                            str(fila.get("prioridad", "alta")),
+                        )
                     barra.empty()
                     st.success(f"✅ {total} fragmento(s) guardados.")
                     st.balloons()
@@ -318,33 +328,39 @@ with tab_conocimiento:
 
     st.divider()
     st.subheader("🗂 Contenido guardado en la memoria de Blue")
-    st.caption("Todo lo que Blue ya sabe. Elimina fragmentos si la información está desactualizada.")
     datos = obtener_conocimiento()
 
     if not datos:
-        st.warning("⚠️ La memoria de Blue está vacía. Sube contenido usando las opciones de arriba.")
+        st.warning("⚠️ La memoria de Blue está vacía.")
     else:
-        col_filtro, col_borrar = st.columns([3, 2])
-        with col_filtro:
+        col_f1, col_f2, col_borrar = st.columns([2, 2, 2])
+        with col_f1:
             cats   = sorted(set(d["categoria"] for d in datos))
-            filtro = st.multiselect("Filtrar por tipo", cats, default=cats)
+            filtro_cat = st.multiselect("Filtrar por categoría", cats, default=cats)
+        with col_f2:
+            subs   = sorted(set(d.get("subsidiaria", "") or "General" for d in datos))
+            filtro_sub = st.multiselect("Filtrar por empresa", subs, default=subs)
         with col_borrar:
             st.write("")
             with st.expander("🗑 Borrado masivo"):
-                st.caption("Elimina varios fragmentos a la vez. Útil para reemplazar información desactualizada.")
-                cat_borrar    = st.selectbox("Tipo a eliminar", cats, key="cat_borrar")
-                area_borrar   = st.text_input("Área (vacío = todas)", key="area_borrar")
-                puesto_borrar = st.text_input("Puesto (vacío = todos)", key="puesto_borrar")
-                st.warning("⚠️ Esta acción no se puede deshacer.")
-                if st.button("🗑 Eliminar fragmentos", type="secondary"):
-                    eliminar_por_filtro(cat_borrar, area_borrar, puesto_borrar)
-                    st.success("✅ Fragmentos eliminados.")
+                cat_b = st.selectbox("Categoría", cats, key="cat_borrar")
+                sub_b = st.text_input("Empresa (vacío = todas)", key="sub_borrar")
+                area_b = st.text_input("Área (vacío = todas)", key="area_borrar")
+                st.warning("⚠️ No se puede deshacer.")
+                if st.button("🗑 Eliminar", type="secondary"):
+                    eliminar_por_filtro(cat_b, sub_b, area_b)
+                    st.success("✅ Eliminados.")
                     st.rerun()
 
-        datos_f = [d for d in datos if d["categoria"] in filtro]
+        datos_f = [d for d in datos
+                   if d["categoria"] in filtro_cat
+                   and (d.get("subsidiaria") or "General") in filtro_sub]
         st.caption(f"Mostrando **{len(datos_f)}** de {len(datos)} fragmento(s)")
+
         for chunk in datos_f:
-            etiqueta = chunk.get("nombre_puesto") or chunk.get("nombre_area") or chunk["categoria"]
+            sub_label  = chunk.get("subsidiaria") or "General"
+            area_label = chunk.get("nombre_puesto") or chunk.get("nombre_area") or ""
+            etiqueta   = f"{sub_label} · {area_label}" if area_label else sub_label
             col_txt, col_btn = st.columns([6, 1])
             with col_txt:
                 with st.expander(f"[{chunk['categoria'].upper()}] {etiqueta} — ID {chunk['id']}"):
@@ -365,133 +381,83 @@ with tab_videos:
 
     st.info(
         "**¿Cómo funcionan los videos?**  \n"
-        "Sube videos de onboarding aquí — bienvenidas, presentaciones de áreas, tutoriales, etc.  \n"
-        "Blue los enviará automáticamente por WhatsApp cuando detecte que el tema es relevante en la conversación.  \n\n"
-        "**Ejemplo:** Si subes un video de 'Bienvenida al área de JimTech' y un desarrollador está haciendo su onboarding, "
-        "Blue enviará ese video cuando llegue al tema de su área.",
+        "Blue los enviará automáticamente por WhatsApp cuando el tema sea relevante.  \n"
+        "Puedes subir videos generales del grupo o específicos de cada empresa.",
         icon="🎥",
     )
 
     st.subheader("➕ Subir nuevo video")
 
     col_info_vid, col_archivo_vid = st.columns([1, 1])
-
     with col_info_vid:
-        st.markdown("**Información del video**")
-        st.caption("Estos datos le dicen a Blue cuándo y a quién enviar este video.")
-
-        titulo_vid = st.text_input(
-            "Título del video *",
-            placeholder="Ej: Bienvenida a BlueBallon, Presentación de JimTech...",
-            help="El título que verá el empleado cuando reciba el video.",
-        )
-        descripcion_vid = st.text_area(
-            "Descripción / ¿Cuándo debe enviarlo Blue?",
-            height=100,
-            placeholder="Ej: Enviar este video cuando el empleado pregunte sobre el área de JimTech o al inicio del onboarding de desarrolladores.",
-            help="Describe en qué momento Blue debe enviar este video. Mientras más claro, mejor.",
-        )
-        cat_vid = st.selectbox(
-            "¿A qué tipo de contenido pertenece?",
-            ["empresa", "area", "puesto", "politica"],
-            format_func=lambda x: {
-                "empresa":  "🏢 Empresa — video general de bienvenida",
-                "area":     "🗂  Área — presentación de un departamento",
-                "puesto":   "👤 Puesto — explicación de un cargo",
-                "politica": "📋 Política — video sobre reglas o beneficios",
-            }[x],
-            key="cat_vid",
-            help="Categoría del video. Blue usará esto para enviarlo en el contexto correcto.",
-        )
+        titulo_vid      = st.text_input("Título del video *", placeholder="Bienvenida a JimTech...")
+        descripcion_vid = st.text_area("¿Cuándo debe enviarlo Blue?", height=80,
+            placeholder="Enviar cuando el empleado pregunte sobre JimTech o al inicio del onboarding...")
+        sub_vid = st.selectbox("¿A qué empresa pertenece?", SUBSIDIARIAS, key="sub_vid")
+        cat_vid = st.selectbox("Categoría", ["empresa", "area", "puesto", "politica"],
+            format_func=lambda x: {"empresa": "🏢 General", "area": "🗂  Área",
+                "puesto": "👤 Puesto", "politica": "📋 Política"}[x], key="cat_vid")
         col_va, col_vb = st.columns(2)
         with col_va:
-            area_vid = st.text_input("Área (si aplica)", placeholder="JimTech, RRHH...", key="area_vid",
-                help="Deja vacío si el video es para toda la empresa.")
+            area_vid  = st.text_input("Área (si aplica)", key="area_vid")
         with col_vb:
-            puesto_vid = st.text_input("Puesto (si aplica)", placeholder="Director General...", key="puesto_vid",
-                help="Solo si el video es específico de un puesto.")
+            puesto_vid = st.text_input("Puesto (si aplica)", key="puesto_vid")
 
     with col_archivo_vid:
-        st.markdown("**Archivo de video**")
-        st.caption("Formatos aceptados: MP4, MOV, AVI. Tamaño máximo recomendado: 16 MB (límite de WhatsApp).")
-
-        archivo_vid = st.file_uploader(
-            "Arrastra tu video aquí o haz clic para buscarlo",
-            type=["mp4", "mov", "avi"],
-            help="WhatsApp solo acepta videos de hasta 16 MB. Si tu video es más grande, comprimelo antes de subir.",
-        )
-
+        st.caption("Formato: MP4, MOV. Límite WhatsApp: **16 MB**")
+        archivo_vid = st.file_uploader("Arrastra tu video aquí", type=["mp4", "mov", "avi"])
         if archivo_vid:
             st.video(archivo_vid)
-            size_mb = len(archivo_vid.getvalue()) / (1024 * 1024)
+            size_mb = len(archivo_vid.getvalue()) / (1024*1024)
             if size_mb > 16:
-                st.warning(f"⚠️ El video pesa {size_mb:.1f} MB. WhatsApp tiene un límite de 16 MB. Considera comprimirlo.")
+                st.warning(f"⚠️ El video pesa {size_mb:.1f} MB. WhatsApp tiene límite de 16 MB.")
             else:
-                st.success(f"✅ Video listo: {size_mb:.1f} MB")
+                st.success(f"✅ {size_mb:.1f} MB — listo para subir")
 
     st.markdown("---")
-
     if archivo_vid and titulo_vid:
         if st.button("⬆️  Subir video y activar en Blue", type="primary", use_container_width=True):
-            with st.spinner("Subiendo video a Supabase... puede tardar unos segundos según el tamaño."):
+            with st.spinner("Subiendo video..."):
                 try:
-                    extension = archivo_vid.name.split(".")[-1].lower()
-                    url_video = subir_video_supabase(archivo_vid.getvalue(), extension)
-                    registrar_video(titulo_vid, descripcion_vid, cat_vid, area_vid, puesto_vid, url_video)
-                    st.success(f"✅ ¡Listo! El video '{titulo_vid}' ya está disponible para Blue.")
+                    ext = archivo_vid.name.split(".")[-1].lower()
+                    url = subir_video_supabase(archivo_vid.getvalue(), ext)
+                    registrar_video(titulo_vid, descripcion_vid, cat_vid, sub_vid, area_vid, puesto_vid, url)
+                    st.success(f"✅ '{titulo_vid}' disponible para Blue.")
                     st.balloons()
                     st.rerun()
                 except Exception as e:
-                    st.error(f"❌ Error al subir el video: {e}")
+                    st.error(f"❌ Error: {e}")
     elif archivo_vid and not titulo_vid:
-        st.warning("⚠️ Falta el título del video para poder subirlo.")
+        st.warning("⚠️ Falta el título del video.")
 
     st.divider()
-
-    # ── Lista de videos ───────────────────────────────────────────────────────
-    st.subheader("🎬 Videos disponibles para Blue")
-    st.caption("Todos los videos que Blue puede enviar durante el onboarding. El toggle activa o desactiva cada video.")
-
+    st.subheader("🎬 Videos disponibles")
     videos = obtener_videos()
 
     if not videos:
-        st.warning("⚠️ No hay videos registrados aún. Sube videos usando el formulario de arriba.")
+        st.warning("⚠️ No hay videos registrados.")
     else:
-        activos_v   = sum(1 for v in videos if v["activo"])
-        inactivos_v = len(videos) - activos_v
-        st.caption(f"**{activos_v}** activo(s) · **{inactivos_v}** inactivo(s) · **{len(videos)}** en total")
-
         for vid in videos:
             icono = "🟢" if vid["activo"] else "🔴"
-            with st.expander(f"{icono} {vid['titulo']} — [{vid['categoria'].upper()}] {vid.get('nombre_area') or vid.get('nombre_puesto') or 'General'}"):
-                col_prev, col_meta = st.columns([2, 1])
-
-                with col_prev:
+            sub_v = vid.get("subsidiaria") or "General"
+            with st.expander(f"{icono} {vid['titulo']} — {sub_v}"):
+                col_p, col_m = st.columns([2, 1])
+                with col_p:
                     st.video(vid["url_video"])
-
-                with col_meta:
-                    st.markdown(f"**Título:** {vid['titulo']}")
+                with col_m:
+                    st.markdown(f"**Empresa:** {sub_v}")
                     if vid.get("descripcion"):
-                        st.markdown(f"**¿Cuándo enviarlo?**  \n{vid['descripcion']}")
-                    st.markdown(f"**Categoría:** {vid['categoria']}")
+                        st.markdown(f"**Cuándo enviarlo:** {vid['descripcion']}")
                     if vid.get("nombre_area"):
                         st.markdown(f"**Área:** {vid['nombre_area']}")
-                    if vid.get("nombre_puesto"):
-                        st.markdown(f"**Puesto:** {vid['nombre_puesto']}")
                     st.caption(f"Subido: {vid['creado_en'][:10]}")
-
-                    col_tog, col_del = st.columns(2)
-                    with col_tog:
-                        nuevo_estado = st.toggle(
-                            "Activo",
-                            value=vid["activo"],
-                            key=f"tog_v_{vid['id']}",
-                            help="Activo = Blue puede enviar este video. Inactivo = Blue no lo enviará.",
-                        )
-                        if nuevo_estado != vid["activo"]:
-                            toggle_video(vid["id"], nuevo_estado)
+                    col_t, col_d = st.columns(2)
+                    with col_t:
+                        nuevo = st.toggle("Activo", value=vid["activo"], key=f"tog_v_{vid['id']}")
+                        if nuevo != vid["activo"]:
+                            toggle_video(vid["id"], nuevo)
                             st.rerun()
-                    with col_del:
+                    with col_d:
                         if st.button("🗑 Eliminar", key=f"del_v_{vid['id']}"):
                             eliminar_video(vid["id"])
                             st.rerun()
@@ -504,30 +470,31 @@ with tab_videos:
 with tab_empleados:
 
     st.info(
-        "**¿Por qué registrar empleados aquí?**  \n"
-        "Cuando un empleado nuevo le escriba a Blue por WhatsApp y diga su nombre, "
-        "Blue lo buscará aquí para saber a qué área pertenece y personalizar el onboarding.  \n\n"
-        "**Importante:** El empleado debe estar registrado ANTES de iniciar el onboarding.",
+        "**¿Por qué registrar empleados?**  \n"
+        "Cuando el empleado le escriba a Blue y diga su nombre, Blue lo buscará aquí "
+        "para saber a qué empresa, área y puesto pertenece y personalizar el onboarding.  \n\n"
+        "**Importante:** Registra al empleado ANTES de que inicie su onboarding.",
         icon="👥",
     )
 
-    st.subheader("➕ Registrar nuevo empleado")
+    st.subheader("➕ Registrar empleado")
+    modo_emp = st.radio("Modo", ["✍️  Uno por uno", "📊 Varios con Excel"], horizontal=True, key="modo_emp")
 
-    modo_empleados = st.radio(
-        "¿Cómo quieres registrar al empleado?",
-        ["✍️  Uno por uno", "📊 Varios a la vez con Excel"],
-        horizontal=True, key="modo_emp",
-    )
-
-    if modo_empleados == "✍️  Uno por uno":
+    if modo_emp == "✍️  Uno por uno":
         with st.form("form_empleado", clear_on_submit=True):
+            # Empresa primero — es lo más importante
+            subsidiaria_emp = st.selectbox(
+                "Empresa donde trabaja *",
+                SUBSIDIARIAS,
+                help="Blue usará esto para mostrar información específica de esa empresa.",
+            )
             col1, col2 = st.columns(2)
             with col1:
                 nombre    = st.text_input("Nombre *", placeholder="Axel",
-                    help="El nombre que el empleado usará al presentarse con Blue.")
-                area_emp  = st.text_input("Área *", placeholder="JimTech, RRHH...",
+                    help="El nombre que usará al presentarse con Blue.")
+                area_emp  = st.text_input("Área *", placeholder="Desarrollo, RRHH, Ventas...",
                     help="Blue mostrará información específica de esta área.")
-                email_emp = st.text_input("Email", placeholder="axel@blueballon.mx")
+                email_emp = st.text_input("Email", placeholder="axel@jimtech.mx")
             with col2:
                 apellido   = st.text_input("Apellido", placeholder="García")
                 puesto_emp = st.text_input("Puesto *", placeholder="Desarrollador, Analista...",
@@ -543,35 +510,51 @@ with tab_empleados:
             elif not puesto_emp.strip():
                 st.error("⚠️ El puesto es obligatorio.")
             else:
-                registrar_empleado(nombre, apellido, area_emp, puesto_emp, email_emp, fecha_ing)
-                st.success(f"✅ {nombre} {apellido} registrado. Ya puede iniciar su onboarding con Blue.")
+                registrar_empleado(nombre, apellido, subsidiaria_emp, area_emp, puesto_emp, email_emp, fecha_ing)
+                st.success(f"✅ {nombre} {apellido} registrado en {subsidiaria_emp}. Ya puede iniciar su onboarding.")
                 st.rerun()
 
     else:
-        st.info("Descarga la plantilla, llénala y súbela aquí.", icon="📊")
+        st.info("Descarga la plantilla, llénala y súbela.", icon="📊")
+        st.markdown("""
+        | Columna | Descripción | Ejemplo |
+        |---|---|---|
+        | `nombre` | Nombre | `Axel` |
+        | `apellido` | Apellido | `García` |
+        | `subsidiaria` | Empresa del grupo | `JimTech`, `Green Balloon` |
+        | `area` | Área | `Desarrollo` |
+        | `puesto` | Cargo | `Desarrollador` |
+        | `email` | Correo | `axel@jimtech.mx` |
+        | `fecha_ingreso` | Fecha inicio | `2026-03-31` |
+        """)
         plantilla_emp = pd.DataFrame([{
-            "nombre": "Axel", "apellido": "García", "area": "JimTech",
-            "puesto": "Desarrollador", "email": "axel@blueballon.mx", "fecha_ingreso": "2026-03-24",
+            "nombre": "Axel", "apellido": "García", "subsidiaria": "JimTech",
+            "area": "Desarrollo", "puesto": "Desarrollador",
+            "email": "axel@jimtech.mx", "fecha_ingreso": "2026-03-31",
+        }, {
+            "nombre": "Ana", "apellido": "López", "subsidiaria": "Green Balloon",
+            "area": "RRHH", "puesto": "Analista RRHH",
+            "email": "ana@greenballoon.mx", "fecha_ingreso": "2026-03-31",
         }])
         buf_emp = io.BytesIO()
         plantilla_emp.to_excel(buf_emp, index=False)
-        st.download_button("⬇️  Descargar plantilla Excel de empleados",
-            data=buf_emp.getvalue(), file_name="plantilla_empleados_blue.xlsx",
+        st.download_button("⬇️  Descargar plantilla", data=buf_emp.getvalue(),
+            file_name="plantilla_empleados_blue.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-        archivo_emp = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"], key="xlsx_emp")
+        archivo_emp = st.file_uploader("Sube tu Excel", type=["xlsx"], key="xlsx_emp")
         if archivo_emp:
             df_emp = pd.read_excel(archivo_emp)
-            if not {"nombre", "area"}.issubset(set(df_emp.columns)):
-                st.error("⚠️ Faltan columnas: `nombre` y `area`.")
+            if "nombre" not in df_emp.columns:
+                st.error("⚠️ Falta la columna `nombre`.")
             else:
                 st.dataframe(df_emp, use_container_width=True)
                 if st.button("➕  Registrar todos", type="primary", key="btn_excel_emp"):
                     for _, fila in df_emp.iterrows():
                         registrar_empleado(
                             str(fila.get("nombre", "")), str(fila.get("apellido", "")),
-                            str(fila.get("area", "")), str(fila.get("puesto", "")),
-                            str(fila.get("email", "")), str(fila.get("fecha_ingreso", "")),
+                            str(fila.get("subsidiaria", "")), str(fila.get("area", "")),
+                            str(fila.get("puesto", "")), str(fila.get("email", "")),
+                            str(fila.get("fecha_ingreso", "")),
                         )
                     st.success(f"✅ {len(df_emp)} empleado(s) registrados.")
                     st.balloons()
@@ -579,31 +562,31 @@ with tab_empleados:
 
     st.divider()
     st.subheader("📋 Empleados registrados")
-    st.caption("El toggle verde/rojo indica si el empleado puede hacer onboarding con Blue.")
-
     empleados = obtener_empleados()
 
     if not empleados:
-        st.warning("⚠️ No hay empleados registrados aún.")
+        st.warning("⚠️ No hay empleados registrados.")
     else:
         activos = sum(1 for e in empleados if e["activo"])
-        st.caption(f"**{activos}** activo(s) · **{len(empleados) - activos}** inactivo(s)")
+        st.caption(f"**{activos}** activo(s) · **{len(empleados)-activos}** inactivo(s)")
 
         for emp in empleados:
             icono = "🟢" if emp["activo"] else "🔴"
-            col_info, col_toggle, col_del = st.columns([5, 1, 1])
+            sub_e = emp.get("subsidiaria") or "General"
+            col_info, col_tog, col_del = st.columns([5, 1, 1])
             with col_info:
                 st.markdown(
-                    f"{icono} **{emp['nombre']} {emp['apellido']}** — {emp['area']} / {emp['puesto']}  \n"
-                    f"<small>{emp.get('email') or '—'} · Ingreso: {emp.get('fecha_ingreso', '—')}</small>",
+                    f"{icono} **{emp['nombre']} {emp['apellido']}** — "
+                    f"{sub_e} · {emp['area']} / {emp['puesto']}  \n"
+                    f"<small>{emp.get('email') or '—'} · Ingreso: {emp.get('fecha_ingreso','—')}</small>",
                     unsafe_allow_html=True,
                 )
-            with col_toggle:
-                nuevo_estado = st.toggle("Activo", value=emp["activo"],
+            with col_tog:
+                nuevo = st.toggle("Activo", value=emp["activo"],
                     key=f"tog_{emp['id']}", label_visibility="collapsed",
                     help="Inactivo = Blue no reconocerá a este empleado.")
-                if nuevo_estado != emp["activo"]:
-                    toggle_empleado(emp["id"], nuevo_estado)
+                if nuevo != emp["activo"]:
+                    toggle_empleado(emp["id"], nuevo)
                     st.rerun()
             with col_del:
                 if st.button("🗑", key=f"del_e_{emp['id']}", help="Eliminar"):
