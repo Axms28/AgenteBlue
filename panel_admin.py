@@ -16,7 +16,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 load_dotenv()
 
-st.set_page_config(page_title="Admin — Agente Blue", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Admin — Agente Ali", page_icon="🤖", layout="wide")
 
 # ─── Splash screen ───────────────────────────────────────────────────────────
 
@@ -154,9 +154,9 @@ cliente_openai, cliente_supabase = obtener_clientes()
 # ─── Subsidiarias disponibles ─────────────────────────────────────────────────
 # Agrega aquí las empresas del grupo — aparecerán en todos los formularios
 SUBSIDIARIAS = [
-    "Grupo Blue Balloon (general)",
+    "Grupo BlueBalloon (general)",
     "JimTech",
-    "Green Balloon",
+    "GreenBalloon",
 ]
 
 # ─── Helpers conocimiento ─────────────────────────────────────────────────────
@@ -175,7 +175,7 @@ def generar_embedding(texto):
 
 def ingestar_texto(contenido, categoria, subsidiaria, nombre_area, nombre_puesto, prioridad, no_dividir=False, chunk_size=800):
     # Si es info general del grupo, subsidiaria queda vacía para que el RAG la incluya siempre
-    sub_guardar = "" if subsidiaria == "Grupo Blue Balloon (general)" else subsidiaria
+    sub_guardar = "" if subsidiaria == "Grupo BlueBalloon (general)" else subsidiaria
     chunks = [contenido.strip()] if no_dividir else obtener_divisor(chunk_size).split_text(contenido.strip())
     insertados = 0
     for chunk in chunks:
@@ -217,6 +217,21 @@ def eliminar_por_filtro(categoria, subsidiaria="", nombre_area="", nombre_puesto
         q = q.eq("nombre_puesto", nombre_puesto.strip())
     q.execute()
 
+def actualizar_chunk(chunk_id, cambios):
+    """
+    cambios: dict con cualquiera de:
+      contenido, categoria, subsidiaria, nombre_area, nombre_puesto, prioridad
+    Si cambia 'contenido', también se recalcula 'vector'.
+    """
+    if not cambios:
+        return
+    payload = dict(cambios)
+    if "contenido" in payload:
+        texto = (payload.get("contenido") or "").strip()
+        payload["contenido"] = texto
+        payload["vector"] = generar_embedding(texto) if texto else []
+    cliente_supabase.table("conocimiento_jim").update(payload).eq("id", chunk_id).execute()
+
 # ─── Helpers empleados ────────────────────────────────────────────────────────
 
 def obtener_empleados():
@@ -237,6 +252,33 @@ def eliminar_empleado(emp_id):
 def toggle_empleado(emp_id, activo):
     cliente_supabase.table("empleados_jim").update({"activo": activo}).eq("id", emp_id).execute()
 
+def actualizar_empleado(emp_id, cambios):
+    """
+    cambios: dict con cualquiera de:
+      nombre, apellido, subsidiaria, area, puesto, email, fecha_ingreso, activo
+    """
+    if not cambios:
+        return
+    payload = dict(cambios)
+    if "subsidiaria" in payload:
+        sub = str(payload.get("subsidiaria") or "").strip()
+        payload["subsidiaria"] = "" if sub == "Grupo BlueBalloon (general)" else sub
+    if "fecha_ingreso" in payload:
+        v = payload.get("fecha_ingreso")
+        # data_editor puede devolver date, Timestamp o string
+        try:
+            if v is None or str(v).strip() == "":
+                payload["fecha_ingreso"] = ""
+            else:
+                payload["fecha_ingreso"] = str(pd.to_datetime(v).date())
+        except Exception:
+            payload["fecha_ingreso"] = str(v)
+    # normalización básica de strings
+    for k in ("nombre", "apellido", "area", "puesto", "email"):
+        if k in payload and payload[k] is not None:
+            payload[k] = str(payload[k]).strip()
+    cliente_supabase.table("empleados_jim").update(payload).eq("id", emp_id).execute()
+
 # ─── Helpers videos ───────────────────────────────────────────────────────────
 
 BUCKET_VIDEOS = "videos-blue"
@@ -250,7 +292,7 @@ def subir_video_supabase(archivo_bytes, extension):
     return cliente_supabase.storage.from_(BUCKET_VIDEOS).get_public_url(nombre)
 
 def registrar_video(titulo, descripcion, categoria, subsidiaria, nombre_area, nombre_puesto, url_video):
-    sub_guardar = "" if subsidiaria == "Grupo Blue Balloon (general)" else subsidiaria
+    sub_guardar = "" if subsidiaria == "Grupo BlueBalloon (general)" else subsidiaria
     cliente_supabase.table("videos_jim").insert({
         "titulo": titulo.strip(), "descripcion": descripcion.strip(),
         "categoria": categoria, "subsidiaria": sub_guardar,
@@ -270,15 +312,15 @@ def toggle_video(video_id, activo):
 
 # ─── UI ──────────────────────────────────────────────────────────────────────
 
-st.title("🤖 Panel de administración — Agente Blue")
-st.caption("Grupo Blue Balloon · JimTech · Green Balloon · Gestión de conocimiento, videos y empleados")
+st.title("🤖 Panel de administración — Agente Ali")
+st.caption("Grupo BlueBalloon · JimTech · GreenBalloon · Gestión de conocimiento, videos y empleados")
 
 with st.expander("ℹ️ ¿Qué es este panel y cómo funciona?", expanded=False):
     st.markdown("""
-    Este panel le enseña información al Agente Blue y registra a los empleados nuevos.
+    Este panel le enseña información al Agente Ali y registra a los empleados nuevos.
 
     **Estructura del Grupo:**
-    Grupo Blue Balloon es la empresa holding. Debajo están las empresas hermanas: JimTech, Green Balloon, etc.
+    Grupo BlueBalloon es la empresa holding. Debajo están las empresas hermanas: JimTech, GreenBalloon, etc.
     Cada empresa tiene sus propias áreas y puestos. Blue sabe distinguir entre ellas.
 
     **¿Qué debes hacer aquí?**
@@ -480,6 +522,70 @@ with tab_conocimiento:
                    if d["categoria"] in filtro_cat
                    and (d.get("subsidiaria") or "General") in filtro_sub]
         st.caption(f"Mostrando **{len(datos_f)}** de {len(datos)} fragmento(s)")
+
+        with st.expander("✏️ Editar fragmentos (todos los campos)", expanded=False):
+            # DataFrame editable
+            df_kb = pd.DataFrame(datos_f)
+            if not df_kb.empty:
+                df_kb = df_kb.rename(columns={"creado_en": "creado_en"})
+                df_kb["subsidiaria"] = df_kb["subsidiaria"].replace({"": "Grupo BlueBalloon (general)"})
+                # Orden de columnas amigable
+                cols = ["id", "categoria", "subsidiaria", "nombre_area", "nombre_puesto", "prioridad", "contenido", "creado_en"]
+                df_kb = df_kb[[c for c in cols if c in df_kb.columns]]
+
+                edited_kb = st.data_editor(
+                    df_kb,
+                    key="kb_editor",
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=["id", "creado_en"],
+                    column_config={
+                        "categoria": st.column_config.SelectboxColumn(
+                            "Categoría",
+                            options=["empresa", "area", "puesto", "politica"],
+                            required=True,
+                        ),
+                        "subsidiaria": st.column_config.SelectboxColumn(
+                            "Empresa",
+                            options=SUBSIDIARIAS,
+                            required=True,
+                        ),
+                        "prioridad": st.column_config.SelectboxColumn(
+                            "Prioridad",
+                            options=["baja", "media", "alta"],
+                            required=True,
+                        ),
+                        # Compatibilidad: TextAreaColumn no existe en algunas versiones de Streamlit
+                        "contenido": st.column_config.TextColumn("Contenido"),
+                        "nombre_area": st.column_config.TextColumn("Área"),
+                        "nombre_puesto": st.column_config.TextColumn("Puesto"),
+                    },
+                )
+
+                if st.button("💾 Guardar cambios (Base de conocimiento)", type="primary", use_container_width=True):
+                    orig = df_kb.set_index("id")
+                    new = edited_kb.set_index("id")
+                    cambios_total = 0
+                    with st.spinner("Guardando cambios..."):
+                        for chunk_id in new.index:
+                            antes = orig.loc[chunk_id]
+                            despues = new.loc[chunk_id]
+                            cambios = {}
+                            for campo in ["categoria", "subsidiaria", "nombre_area", "nombre_puesto", "prioridad", "contenido"]:
+                                if campo not in new.columns:
+                                    continue
+                                a = "" if pd.isna(antes.get(campo)) else str(antes.get(campo))
+                                d = "" if pd.isna(despues.get(campo)) else str(despues.get(campo))
+                                if a != d:
+                                    cambios[campo] = d
+                            if cambios:
+                                # normalizar subsidiaria "general"
+                                if cambios.get("subsidiaria") == "Grupo BlueBalloon (general)":
+                                    cambios["subsidiaria"] = ""
+                                actualizar_chunk(chunk_id, cambios)
+                                cambios_total += 1
+                    st.success(f"✅ Cambios aplicados a **{cambios_total}** fragmento(s).")
+                    st.rerun()
 
         for chunk in datos_f:
             sub_label  = chunk.get("subsidiaria") or "General"
@@ -693,6 +799,65 @@ with tab_empleados:
     else:
         activos = sum(1 for e in empleados if e["activo"])
         st.caption(f"**{activos}** activo(s) · **{len(empleados)-activos}** inactivo(s)")
+
+        with st.expander("✏️ Editar empleados (todos los campos)", expanded=False):
+            df_emp_edit = pd.DataFrame(empleados)
+            if not df_emp_edit.empty:
+                df_emp_edit["subsidiaria"] = df_emp_edit["subsidiaria"].replace({"": "Grupo BlueBalloon (general)"})
+                # Normalizar fecha a algo editable
+                if "fecha_ingreso" in df_emp_edit.columns:
+                    df_emp_edit["fecha_ingreso"] = df_emp_edit["fecha_ingreso"].fillna("")
+
+                # Orden de columnas
+                cols = [
+                    "id", "nombre", "apellido", "subsidiaria", "area", "puesto",
+                    "email", "fecha_ingreso", "activo", "creado_en",
+                ]
+                df_emp_edit = df_emp_edit[[c for c in cols if c in df_emp_edit.columns]]
+
+                edited_emp = st.data_editor(
+                    df_emp_edit,
+                    key="emp_editor",
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=["id", "creado_en"],
+                    column_config={
+                        "subsidiaria": st.column_config.SelectboxColumn(
+                            "Empresa",
+                            options=SUBSIDIARIAS,
+                            required=True,
+                        ),
+                        "activo": st.column_config.CheckboxColumn("Activo"),
+                        "fecha_ingreso": st.column_config.TextColumn("Fecha ingreso (YYYY-MM-DD)"),
+                    },
+                )
+
+                if st.button("💾 Guardar cambios (Empleados)", type="primary", use_container_width=True):
+                    orig = df_emp_edit.set_index("id")
+                    new = edited_emp.set_index("id")
+                    cambios_total = 0
+                    with st.spinner("Guardando cambios..."):
+                        for emp_id in new.index:
+                            antes = orig.loc[emp_id]
+                            despues = new.loc[emp_id]
+                            cambios = {}
+                            for campo in ["nombre", "apellido", "subsidiaria", "area", "puesto", "email", "fecha_ingreso", "activo"]:
+                                if campo not in new.columns:
+                                    continue
+                                a = "" if pd.isna(antes.get(campo)) else str(antes.get(campo))
+                                d = "" if pd.isna(despues.get(campo)) else str(despues.get(campo))
+                                # Para 'activo' evitamos comparar strings
+                                if campo == "activo":
+                                    if bool(antes.get(campo)) != bool(despues.get(campo)):
+                                        cambios[campo] = bool(despues.get(campo))
+                                else:
+                                    if a != d:
+                                        cambios[campo] = despues.get(campo)
+                            if cambios:
+                                actualizar_empleado(emp_id, cambios)
+                                cambios_total += 1
+                    st.success(f"✅ Cambios aplicados a **{cambios_total}** empleado(s).")
+                    st.rerun()
 
         for emp in empleados:
             icono = "🟢" if emp["activo"] else "🔴"
